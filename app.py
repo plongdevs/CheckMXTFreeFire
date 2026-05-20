@@ -3,7 +3,7 @@ from flask_cors import CORS
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from datetime import datetime
-import base64, json, time, socket, hashlib, requests, os
+import base64, json, time, socket, hashlib, requests, os, uuid, tempfile
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -564,12 +564,18 @@ def api():
             online_ip, online_port, w_ip, w_port = get_login_data(jwt, open_id, at, platform)
             # B4: Build binary packet y hệt log.py
             packet = build_login_packet(jwt, key, iv)
-            # B5: Lưu vào session
-            session['sp_pkt']  = base64.b64encode(packet).decode()
-            session['sp_ip']   = online_ip
-            session['sp_port'] = online_port
-            session['sp_wip']  = w_ip  or ''
-            session['sp_wport']= w_port or 0
+            # B5: Lưu vào file tạm (không dùng session cookie vì proxy.php không forward cookie)
+            sid = uuid.uuid4().hex
+            state = {
+                'pkt':   base64.b64encode(packet).decode(),
+                'ip':    online_ip,
+                'port':  online_port,
+                'wip':   w_ip   or '',
+                'wport': w_port or 0,
+            }
+            tmp = os.path.join(tempfile.gettempdir(), f'gg_spam_{sid}.json')
+            with open(tmp, 'w') as tf: json.dump(state, tf)
+
             # B6: Gửi whisper lần đầu
             whisper_ok = False
             if w_ip and w_port:
@@ -578,6 +584,7 @@ def api():
                     whisper_ok = True
                 except: pass
             return ok({
+                'sid':        sid,
                 'ip':         online_ip,
                 'port':       online_port,
                 'whisper':    f'{w_ip}:{w_port}' if w_ip else None,
@@ -587,13 +594,15 @@ def api():
         except Exception as e: return err(str(e))
 
     elif act == 'spam_send':
-        pkt_b64  = session.get('sp_pkt','')
-        ip       = session.get('sp_ip','')
-        port     = int(session.get('sp_port',0))
-        if not pkt_b64 or not ip or not port:
-            return err('Chưa init — gọi spam_init trước')
+        sid = d.get('sid','')
+        if not sid: return err('Thiếu sid — gọi spam_init trước')
+        tmp = os.path.join(tempfile.gettempdir(), f'gg_spam_{sid}.json')
+        if not os.path.exists(tmp): return err('Session hết hạn — gọi spam_init lại')
         try:
-            packet = base64.b64decode(pkt_b64)
+            with open(tmp, 'r') as tf: state = json.load(tf)
+            packet = base64.b64decode(state['pkt'])
+            ip     = state['ip']
+            port   = int(state['port'])
             recv   = send_packet_tcp(ip, port, packet, timeout=8)
             return ok({'recv': recv})
         except Exception as e: return err(str(e))
