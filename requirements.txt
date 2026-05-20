@@ -1,0 +1,7 @@
+flask
+flask-cors
+pycryptodome
+requests
+urllib3
+protobuf
+gunicorn
