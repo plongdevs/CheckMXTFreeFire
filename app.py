@@ -634,8 +634,10 @@ def api():
         if uid in active_spams:
             active_spams[uid]['stop_event'].set()
             active_spams[uid]['status'] = 'stopped'
-            return ok(msg='Stopped')
-        return err('Not running')
+            # Cleanup after a short delay or immediately
+            del active_spams[uid]
+            return ok(msg='Đã dừng và xóa tiến trình thành công')
+        return err('Không có tiến trình nào đang chạy cho tài khoản này')
 
     return err(f'Unknown action: {act}')
 
