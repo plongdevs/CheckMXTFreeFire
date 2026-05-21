@@ -216,7 +216,6 @@ def get_login_data(jwt, open_id, access_token, platform):
     if not online:
         raise Exception("Không tìm thấy địa chỉ game server")
 
-    # Parse "ip:port" — dùng strrpos để tránh IPv6/dấu : phụ
     lc = online.rfind(':')
     online_ip, online_port = online[:lc], int(online[lc+1:])
 
@@ -269,22 +268,22 @@ def err(msg):
 def ji():
     return request.get_json(silent=True) or {}
 
-active_spams = {} # key: access_token, value: {thread, stop_event, status, ...}
+active_spams = {} # key: uid (int), value: {at, thread, stop_event, status, ...}
 
-def spam_loop(at, ip, port, packet, iv_ms, end_time):
+def spam_loop(uid, ip, port, packet, iv_ms, end_time):
     while time.time() < end_time:
-        if at not in active_spams or active_spams[at]['stop_event'].is_set():
+        if uid not in active_spams or active_spams[uid]['stop_event'].is_set():
             break
         try:
             send_packet_tcp(ip, port, packet, timeout=5)
-            active_spams[at]['ok'] += 1
+            active_spams[uid]['ok'] += 1
         except:
-            active_spams[at]['fail'] += 1
-        active_spams[at]['sent'] += 1
+            active_spams[uid]['fail'] += 1
+        active_spams[uid]['sent'] += 1
         time.sleep(iv_ms / 1000.0)
     
-    if at in active_spams:
-        active_spams[at]['status'] = 'finished'
+    if uid in active_spams:
+        active_spams[uid]['status'] = 'finished'
 
 # ═══════════════════════════════════════
 # ROUTES
@@ -299,6 +298,7 @@ def api():
         return '', 200
     d   = ji()
     act = d.get('action','')
+    uid = d.get('uid')
 
     # ── CHECK EMAIL ──
     if act == 'check_email':
@@ -395,7 +395,6 @@ def api():
         if not all([at,email,vt,sp]): return err('Thiếu thông tin')
         if not sp.isdigit() or len(sp)!=6: return err('Security code phải là 6 chữ số')
         try:
-            # Cancel any pending request first
             requests.post("https://100067.connect.garena.com/game/account_security/bind:cancel_request",
                           data={'app_id':'100067','access_token':at}, headers=GH, timeout=10)
             h = hashlib.sha256(sp.encode()).hexdigest().upper()
@@ -503,12 +502,12 @@ def api():
 
     # ── GUEST → JWT ──
     elif act == 'guest_to_jwt':
-        uid = d.get('uid',''); pw = d.get('password','')
-        if not uid or not pw: return err('UID and password required')
+        uid_guest = d.get('uid_guest',''); pw = d.get('password','') # Đổi tên uid tránh trùng
+        if not uid_guest or not pw: return err('UID and password required')
         try:
             r = requests.post(
                 "https://100067.connect.garena.com/oauth/token",
-                data={'grant_type':'password','app_id':'100067','account':uid,'password':hashlib.md5(pw.encode()).hexdigest()},
+                data={'grant_type':'password','app_id':'100067','account':uid_guest,'password':hashlib.md5(pw.encode()).hexdigest()},
                 headers={'User-Agent':'GarenaMSDK/4.0.19P9(Redmi Note 5 ;Android 9;en;US;)','Content-Type':'application/x-www-form-urlencoded'},
                 timeout=12
             )
@@ -552,10 +551,8 @@ def api():
             if not isinstance(entries_raw, list): entries_raw = [entries_raw]
             result = []
             for ed in entries_raw:
-                if isinstance(ed, bytes):
-                    e = proto_parse(ed)
-                elif isinstance(ed, str):
-                    e = proto_parse(ed.encode('latin-1'))
+                if isinstance(ed, bytes): e = proto_parse(ed)
+                elif isinstance(ed, str): e = proto_parse(ed.encode('latin-1'))
                 else: continue
                 ts     = e.get(1, 0)
                 model  = e.get(3, '') if isinstance(e.get(3,''), str) else ''
@@ -573,67 +570,55 @@ def api():
         at = d.get('access_token','')
         iv = int(d.get('interval', 500))
         duration = int(d.get('duration_ms', 0))
-        uid = d.get('uid')
-        is_pro = bool(d.get('is_pro', 0))
         
-        if not at: return err('Access token required')
         if not uid: return err('Unauthorized (missing uid)')
+        if not at: return err('Access token required')
 
-        if at in active_spams and active_spams[at]['status'] == 'running':
-            return ok({'status': 'running', 'ip': active_spams[at]['ip'], 'port': active_spams[at]['port']}, 'Spam is already running for this token')
-
-        # Check user limits
-        active_user_tasks = [k for k, v in active_spams.items() if v.get('uid') == uid and v.get('status') == 'running']
-        limit = 3 if is_pro else 1
-        if len(active_user_tasks) >= limit:
-            return err(f"Bạn đã đạt giới hạn {limit} luồng chạy đồng thời. Hãy dừng bớt luồng cũ hoặc nâng cấp PRO.")
+        if uid in active_spams and active_spams[uid]['status'] == 'running':
+            s = active_spams[uid]
+            return ok({
+                'status': 'running', 
+                'ip': s['ip'], 
+                'port': s['port'],
+                'sent': s['sent'],
+                'ok': s['ok'],
+                'fail': s['fail'],
+                'at': s['at']
+            }, 'Spam is already running')
 
         try:
-            # B1: Inspect
             open_id, platform = inspect_token(at)
-            # B2: MajorLogin
             jwt, key, iv_tok, _, _ = get_jwt_from_access(at)
-            # B3: GetLoginData → lấy IP:port
             online_ip, online_port, w_ip, w_port = get_login_data(jwt, open_id, at, platform)
-            # B4: Build binary packet
             packet = build_login_packet(jwt, key, iv_tok)
             
-            if duration > 0:
-                # Limit to 15 days
-                max_duration = 15 * 86400 * 1000
-                if duration > max_duration: duration = max_duration
-                
-                end_time = time.time() + (duration / 1000.0)
-                stop_event = threading.Event()
-                thread = threading.Thread(target=spam_loop, args=(at, online_ip, online_port, packet, iv, end_time))
-                thread.daemon = True
-                
-                active_spams[at] = {
-                    'uid': uid,
-                    'stop_event': stop_event,
-                    'status': 'running',
-                    'sent': 0,
-                    'ok': 0,
-                    'fail': 0,
-                    'ip': online_ip,
-                    'port': online_port,
-                    'end_time': end_time
-                }
-                thread.start()
-                return ok({'status': 'started', 'ip': online_ip, 'port': online_port})
+            max_duration = 15 * 86400 * 1000
+            if duration <= 0 or duration > max_duration: duration = max_duration
             
-            return ok({
-                'ip':         online_ip,
-                'port':       online_port,
-                'pkt_size':   len(packet),
-            })
+            end_time = time.time() + (duration / 1000.0)
+            stop_event = threading.Event()
+            thread = threading.Thread(target=spam_loop, args=(uid, online_ip, online_port, packet, iv, end_time))
+            thread.daemon = True
+            
+            active_spams[uid] = {
+                'at': at,
+                'stop_event': stop_event,
+                'status': 'running',
+                'sent': 0,
+                'ok': 0,
+                'fail': 0,
+                'ip': online_ip,
+                'port': online_port,
+                'end_time': end_time
+            }
+            thread.start()
+            return ok({'status': 'started', 'ip': online_ip, 'port': online_port})
         except Exception as e: return err(str(e))
 
     elif act == 'spam_status':
-        at = d.get('access_token','')
-        if not at or at not in active_spams:
+        if not uid or uid not in active_spams:
             return ok({'status': 'idle'})
-        s = active_spams[at]
+        s = active_spams[uid]
         return ok({
             'status': s['status'],
             'sent': s['sent'],
@@ -641,14 +626,14 @@ def api():
             'fail': s['fail'],
             'ip': s['ip'],
             'port': s['port'],
+            'at': s['at'],
             'remaining_ms': max(0, int((s['end_time'] - time.time()) * 1000))
         })
 
     elif act == 'spam_stop':
-        at = d.get('access_token','')
-        if at in active_spams:
-            active_spams[at]['stop_event'].set()
-            active_spams[at]['status'] = 'stopped'
+        if uid in active_spams:
+            active_spams[uid]['stop_event'].set()
+            active_spams[uid]['status'] = 'stopped'
             return ok(msg='Stopped')
         return err('Not running')
 
