@@ -520,33 +520,69 @@ def api():
                 "https://100067.connect.garena.com/game/account_security/bind:cancel_request",
                 data={'app_id':'100067','access_token':at}, headers=GH, timeout=12
             )
-            return (ok(msg='Đã hủy request') if r.status_code == 200 else err('Không có request nào'))
+            return (ok(msg='Đã hủy quá trình thêm email khôi phục (Bạn đã có thể thêm email mới!)') if r.status_code == 200 else err('Không có quá trình thêm email khôi phục nào'))
         except Exception as e: return err(str(e))
 
     # ── REVOKE TOKEN ──
     elif act == 'revoke_token':
         at = d.get('access_token','')
-        if not at: return err('Access token required')
+        if not at: return err('Vui lòng điền Access Token')
         try:
             r = requests.get(f"https://100067.connect.garena.com/oauth/logout?access_token={at}", timeout=12)
-            return (ok(msg='Token revoked!') if r.text.strip() == '{"result":0}' else err(f'Failed: {r.text}'))
+            return (ok(msg='Access token đã bị vô hiệu hoá (Vui lòng lấy access token mới để sử dụng các tính năng khác!)!') if r.text.strip() == '{"result":0}' else err(f'Failed: {r.text}'))
         except Exception as e: return err(str(e))
 
-    # ── SEND OTP ──
     elif act == 'send_otp':
-        at    = d.get('access_token','')
-        email = d.get('email','')
-        if not at or not email: return err('Thiếu access_token hoặc email')
+        at    = d.get('access_token', '')
+        email = d.get('email', '')
+    
+        if not at or not email:
+            return err('Thiếu Access Token hoặc email')
+    
         try:
             r = requests.post(
                 "https://100067.connect.garena.com/game/account_security/bind:send_otp",
-                data={'email':email,'locale':'en_MA','region':'IND','app_id':'100067','access_token':at},
-                headers=GH, timeout=12
+                data={
+                    'email': email,
+                    'locale': 'en_MA',
+                    'region': 'IND',
+                    'app_id': '100067',
+                    'access_token': at
+                },
+                headers=GH,
+                timeout=12
             )
+    
             j = r.json()
-            return (ok(msg=f'OTP đã gửi tới {email}') if (r.status_code==200 and j.get('result')==0) else err(f'Gửi OTP thất bại: {r.text}'))
-        except Exception as e: return err(str(e))
-
+    
+            # Thành công
+            if r.status_code == 200 and j.get('result') == 0:
+                return ok(msg=f'OTP đã gửi tới {email}')
+    
+            # Lấy mã lỗi
+            error_code = j.get('error')
+    
+            # Xử lý lỗi cụ thể
+            if error_code == 'error_params':
+                return err('Dữ liệu nhập vào không hợp lệ hoặc Access Token đã hết hạn')
+    
+            elif error_code == 'error_email_used':
+                return err('Email này đã được dùng. Vui lòng sử dụng email khác!')
+    
+            elif error_code == 'error_too_many_requests':
+                return err('Bạn thao tác quá nhiều lần. Vui lòng thử lại sau')
+    
+            # Lỗi mặc định
+            return err(f'Gửi OTP thất bại: {error_code or r.text}')
+    
+        except requests.Timeout:
+            return err('Kết nối tới máy chủ quá lâu')
+    
+        except requests.ConnectionError:
+            return err('Không thể kết nối tới máy chủ')
+    
+        except Exception as e:
+            return err(f'Lỗi hệ thống: {str(e)}')
     # ── VERIFY OTP ──
     elif act == 'verify_otp':
         at    = d.get('access_token','')
@@ -570,7 +606,7 @@ def api():
         vt    = d.get('verifier_token','')
         sp    = d.get('sec_pw','')
         if not all([at,email,vt,sp]): return err('Thiếu thông tin')
-        if not sp.isdigit() or len(sp)!=6: return err('Security code phải là 6 chữ số')
+        if not sp.isdigit() or len(sp)!=6: return err('Mã bảo mật phải là 6 chữ số')
         try:
             requests.post("https://100067.connect.garena.com/game/account_security/bind:cancel_request",
                           data={'app_id':'100067','access_token':at}, headers=GH, timeout=10)
@@ -594,7 +630,7 @@ def api():
             post = {'app_id':'100067','access_token':at,'email':email}
             if otp: post['otp'] = otp
             if sp:
-                if not sp.isdigit() or len(sp)!=6: return err('Security code phải là 6 chữ số')
+                if not sp.isdigit() or len(sp)!=6: return err('Mã bảo mật phải là 6 chữ số')
                 post['secondary_password'] = hashlib.sha256(sp.encode()).hexdigest().upper()
             r = requests.post(
                 "https://100067.connect.garena.com/game/account_security/bind:verify_identity",
@@ -619,20 +655,65 @@ def api():
         except Exception as e: return err(str(e))
 
     # ── CREATE REBIND ──
+# ── CREATE REBIND ──
     elif act == 'create_rebind':
-        at = d.get('access_token','')
-        it = d.get('identity_token','')
-        vt = d.get('verifier_token','')
-        ne = d.get('new_email','')
-        if not all([at,it,vt,ne]): return err('Thiếu thông tin')
+        at = d.get('access_token', '')
+        it = d.get('identity_token', '')
+        vt = d.get('verifier_token', '')
+        ne = d.get('new_email', '')
+    
+        if not all([at, it, vt, ne]):
+            return err('Thiếu thông tin')
+    
         try:
             r = requests.post(
                 "https://100067.connect.garena.com/game/account_security/bind:create_rebind_request",
-                data={'identity_token':it,'email':ne,'app_id':'100067','verifier_token':vt,'access_token':at},
-                headers=GH, timeout=12
+                data={
+                    'identity_token': it,
+                    'email': ne,
+                    'app_id': '100067',
+                    'verifier_token': vt,
+                    'access_token': at
+                },
+                headers=GH,
+                timeout=12
             )
-            return (ok(msg='Email đã đổi thành công!') if '"result":0' in r.text.replace(' ','') else err(f'Thất bại: {r.text}'))
-        except Exception as e: return err(str(e))
+    
+            j = r.json()
+    
+            # Thành công
+            if r.status_code == 200 and j.get('result') == 0:
+                return ok(msg='Email đã đổi thành công!')
+    
+            # Lấy mã lỗi
+            error_code = j.get('error')
+    
+            # Xử lý lỗi cụ thể
+            if error_code == 'error_unmatched_email':
+                return err('Email xác minh không khớp')
+    
+            elif error_code == 'error_no_binding_found':
+                return err('Không tìm thấy liên kết email trên tài khoản')
+    
+            elif error_code == 'error_params':
+                return err('Dữ liệu gửi lên không hợp lệ')
+    
+            elif error_code == 'error_too_many_requests':
+                return err('Bạn thao tác quá nhiều lần. Vui lòng thử lại sau')
+    
+            # Lỗi chưa xác định
+            print(f'[REBIND UNKNOWN ERROR] {j}')
+    
+            return err(f'Thất bại: {error_code or r.text}')
+    
+        except requests.Timeout:
+            return err('Kết nối tới máy chủ quá lâu')
+    
+        except requests.ConnectionError:
+            return err('Không thể kết nối tới máy chủ')
+    
+        except Exception as e:
+            return err(f'Lỗi hệ thống: {str(e)}')
 
     # ── EAT → ACCESS TOKEN ──
     elif act == 'eat_to_access':
