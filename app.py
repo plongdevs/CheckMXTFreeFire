@@ -3,6 +3,7 @@ from flask_cors import CORS
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from datetime import datetime
+from google.protobuf.timestamp_pb2 import Timestamp
 import base64, json, time, socket, hashlib, requests, os, threading, random, uuid
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -414,17 +415,23 @@ class SimpleProtobuf:
 
 def build_ban_packet(jwt, account_id, timestamp, key, iv):
     try:
-        # Ported from Ban7Api
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        enc = cipher.encrypt(pad(jwt.encode(), 16))
+        # Exact logic from Ban7Api/app.py
+        def encrypt_packet(hex_string, aes_key, aes_iv):
+            data = bytes.fromhex(hex_string)
+            cipher = AES.new(aes_key, AES.MODE_CBC, aes_iv)
+            encrypted = cipher.encrypt(pad(data, AES.block_size))
+            return encrypted.hex()
+
+        encrypted_hex = encrypt_packet(jwt.encode().hex(), key, iv)
+        head_len = hex(len(encrypted_hex) // 2)[2:]
+        ide_hex = hex(int(account_id))[2:]
+        zeros = "0" * (16 - len(ide_hex))
+        timestamp_hex = hex(int(timestamp))[2:]
+        if len(timestamp_hex) % 2 != 0: timestamp_hex = '0' + timestamp_hex
         
-        ide_hex = hex(int(account_id))[2:].zfill(16)
-        timestamp_hex = hex(int(timestamp))[2:].zfill(16)
-        head_len_hex = hex(len(enc))[2:].zfill(8)
-        
-        # Ban7 packet header: 0115 (2) + account_id (8) + timestamp (8) + length (4)
-        head_hex = f"0115{ide_hex}{timestamp_hex}{head_len_hex}"
-        return bytes.fromhex(head_hex) + enc
+        # Structure: 0115 + UID(8B/16H) + TS + 00000 + LEN
+        head = f"0115{zeros}{ide_hex}{timestamp_hex}00000{head_len}"
+        return bytes.fromhex(head + encrypted_hex)
     except:
         return None
 

@@ -4,4 +4,5 @@ pycryptodome
 requests
 urllib3
 protobuf
+googleapis-common-protos
 gunicorn
