@@ -245,15 +245,23 @@ def get_jwt_from_access(access_token):
         except: continue
     raise Exception("Tất cả platform đều thất bại")
 
-def send_packet_tcp(ip, port, packet, timeout=8):
+def send_packet_tcp(ip, port, packet, connect_timeout=4, recv_timeout=0.3):
+    """
+    connect_timeout: timeout kết nối TCP (giây)
+    recv_timeout:    timeout nhận dữ liệu (rất ngắn — game server hiếm khi reply)
+                     Mục đích: gửi packet xong là đủ, không cần chờ reply lâu.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
+    s.settimeout(connect_timeout)
     s.connect((ip, int(port)))
     s.sendall(packet)
+    s.settimeout(recv_timeout)   # giảm xuống sau khi đã gửi
     recv = b''
     try: recv = s.recv(4096)
-    except socket.timeout: pass
-    s.close()
+    except (socket.timeout, OSError): pass
+    finally:
+        try: s.close()
+        except: pass
     return len(recv)
 
 # ═══════════════════════════════════════
@@ -268,22 +276,35 @@ def err(msg):
 def ji():
     return request.get_json(silent=True) or {}
 
-active_spams = {} # key: uid (int), value: {at, thread, stop_event, status, ...}
+active_spams      = {}   # uid  → session info
+active_spams_sid  = {}   # sid  → uid  (để frontend reconnect bằng sid)
+_spam_lock        = threading.Lock()
 
-def spam_loop(uid, ip, port, packet, iv_ms, end_time):
-    while time.time() < end_time:
-        if uid not in active_spams or active_spams[uid]['stop_event'].is_set():
+def spam_loop(uid, stop_ev, ip, port, packet, iv_ms, end_time):
+    interval = max(iv_ms, 200) / 1000.0
+    while not stop_ev.is_set():
+        if time.time() >= end_time:
+            with _spam_lock:
+                if uid in active_spams:
+                    active_spams[uid]['status'] = 'expired'
             break
+        # Gửi packet
         try:
-            send_packet_tcp(ip, port, packet, timeout=5)
-            active_spams[uid]['ok'] += 1
-        except:
-            active_spams[uid]['fail'] += 1
-        active_spams[uid]['sent'] += 1
-        time.sleep(iv_ms / 1000.0)
-    
-    if uid in active_spams:
-        active_spams[uid]['status'] = 'finished'
+            recv = send_packet_tcp(ip, port, packet)
+            with _spam_lock:
+                if uid in active_spams:
+                    active_spams[uid]['ok']   += 1
+                    active_spams[uid]['sent']  += 1
+        except Exception:
+            with _spam_lock:
+                if uid in active_spams:
+                    active_spams[uid]['fail']  += 1
+                    active_spams[uid]['sent']  += 1
+        # Dùng stop_ev.wait() thay time.sleep() — có thể ngắt ngay khi stop
+        stop_ev.wait(interval)
+    with _spam_lock:
+        if uid in active_spams and active_spams[uid]['status'] == 'running':
+            active_spams[uid]['status'] = 'stopped'
 
 # ═══════════════════════════════════════
 # ROUTES
@@ -292,139 +313,6 @@ def spam_loop(uid, ip, port, packet, iv_ms, end_time):
 @app.route('/', methods=['GET'])
 def index(): return 'GarenaTools API OK', 200
 
-# ═══════════════════════════════════════
-# BAN 7 DAYS LOGIC (adapted from Ban7/core.py)
-# ═══════════════════════════════════════
-
-# ---------------- SimpleProtobuf Class (for Ban7)  ---------------- #
-class SimpleProtobuf:
-    @staticmethod
-    def encode_varint(value):
-        result = bytearray()
-        while value > 0x7F:
-            result.append((value & 0x7F) | 0x80)
-            value >>= 7
-        result.append(value & 0x7F)
-        return bytes(result)   
-
-    @staticmethod
-    def encode_string(field_number, value):
-        if isinstance(value, str): value = value.encode('utf-8')        
-        result = bytearray()
-        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 2))
-        result.extend(SimpleProtobuf.encode_varint(len(value)))
-        result.extend(value)
-        return bytes(result)   
-
-    @staticmethod
-    def encode_int32(field_number, value):
-        result = bytearray()
-        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 0))
-        result.extend(SimpleProtobuf.encode_varint(value))
-        return bytes(result)   
-
-    @staticmethod
-    def create_ban_payload(open_id, access_token, platform):
-        p = str(platform)
-        random_ip = f"1{random.randint(0,9)}{random.randint(0,9)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
-        random_device = f"Google|{str(uuid.uuid4())}"
-        payload = bytearray()
-        payload.extend(SimpleProtobuf.encode_string(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        payload.extend(SimpleProtobuf.encode_string(4,  "free fire"))
-        payload.extend(SimpleProtobuf.encode_int32 (5,  4))
-        payload.extend(SimpleProtobuf.encode_string(7,  "1.123.1"))
-        payload.extend(SimpleProtobuf.encode_string(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
-        payload.extend(SimpleProtobuf.encode_string(19, random_device))
-        payload.extend(SimpleProtobuf.encode_string(20, random_ip))
-        payload.extend(SimpleProtobuf.encode_string(22, open_id))
-        payload.extend(SimpleProtobuf.encode_string(23, p))
-        payload.extend(SimpleProtobuf.encode_string(29, access_token))
-        payload.extend(SimpleProtobuf.encode_string(99, p))
-        return bytes(payload)
-
-def ban7_logic(access_token, platform_manual=None):
-    try:
-        # Step 1: Inspect token
-        open_id, platform = inspect_token(access_token)
-        
-        # Determine platforms to try (detect/search like spam log)
-        platforms = [int(platform_manual)] if platform_manual else list(dict.fromkeys([platform, 2, 3, 4, 6, 8]))
-        
-        last_error = "Tất cả platform đều thất bại"
-        
-        for pt in platforms:
-            try:
-                # Step 2: MajorLogin
-                payload = SimpleProtobuf.create_ban_payload(open_id, access_token, pt)
-                enc = aes_enc(payload)
-
-                r = requests.post(
-                    "https://loginbp.ggpolarbear.com/MajorLogin",
-                    headers={
-                        "Host": "loginbp.ggpolarbear.com",
-                        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
-                        "Connection": "Keep-Alive",
-                        "Content-Type": "application/octet-stream",
-                        "X-GA": "v1 1",
-                        "X-Unity-Version": "2018.4.11f1",
-                        "ReleaseVersion": "OB53"
-                    },
-                    data=enc, verify=False, timeout=12
-                )
-                if not r.ok: 
-                    last_error = f"Platform {pt}: MajorLogin HTTP {r.status_code}"
-                    continue
-
-                # Step 3: Parse response
-                tok, k, v = None, None, None
-                try:
-                    from MajorLogin_res_pb2 import MajorLoginRes
-                    res = MajorLoginRes()
-                    dec = aes_dec(r.content) # Use default key/iv
-                    res.ParseFromString(dec if dec else r.content)
-                    if res.account_jwt:
-                        tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
-                except: pass
-
-                if not tok:
-                    p = proto_parse(aes_dec(r.content) or r.content)
-                    tok = pget(p, 8)
-                    k = pget(p, 22) or AES_KEY
-                    v = pget(p, 23) or AES_IV
-
-                if not tok: 
-                    last_error = f"Platform {pt}: Parse failed"
-                    continue
-
-                # Step 4: GetLoginData
-                online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, pt)
-
-                # Step 5: Build and send packet
-                packet = build_login_packet(tok, k, v)
-                recv_len = send_packet_tcp(online_ip, online_port, packet)
-                
-                if recv_len > 0:
-                    pl = decode_jwt(tok)
-                    return {
-                        "success": True,
-                        "account_id": pl.get("account_id"),
-                        "nickname": pl.get("nickname"),
-                        "platform": pt,
-                        "msg": "Đã gửi packet thành công!"
-                    }
-                else:
-                    last_error = f"Platform {pt}: Không nhận được phản hồi"
-                    continue
-
-            except Exception as e:
-                last_error = f"Platform {pt}: {str(e)}"
-                continue
-                
-        return {"success": False, "message": last_error}
-
-    except Exception as e:
-        return {"success": False, "message": str(e)}
-
 @app.route('/api', methods=['POST','OPTIONS'])
 def api():
     if request.method == 'OPTIONS':
@@ -432,18 +320,6 @@ def api():
     d   = ji()
     act = d.get('action','')
     uid = d.get('uid')
-
-    # ── BAN 7 DAYS ──
-    if act == 'ban7':
-        at = d.get('access_token','')
-        pt = d.get('platform')
-        if not at: return err('Access token required')
-        res = ban7_logic(at, pt)
-        if res.get('success'):
-            return ok(res, res['msg'])
-        else:
-            return err(res.get('message', 'Thất bại'))
-
     # ── CHECK EMAIL ──
     if act == 'check_email':
         at = d.get('access_token','')
@@ -615,7 +491,7 @@ def api():
             qs  = parse_qs(urlparse(r.url).query)
             at  = (qs.get('access_token') or [None])[0]
             if not at: return err('Không lấy được access_token từ EAT')
-            return ok(at)
+            return ok({'access_token': at, '_display': at})
         except Exception as e: return err(str(e))
 
     # ── EAT → JWT ──
@@ -632,7 +508,7 @@ def api():
             at  = (qs.get('access_token') or [None])[0]
             if not at: return err('Không lấy được access_token')
             tok, k, v, _, _ = get_jwt_from_access(at)
-            return ok({'jwt': tok, 'decoded': decode_jwt(tok)})
+            return ok({'jwt': tok, 'decoded': decode_jwt(tok), '_display': tok})
         except Exception as e: return err(str(e))
 
     # ── ACCESS TOKEN → JWT ──
@@ -641,7 +517,7 @@ def api():
         if not at: return err('Access token required')
         try:
             tok, k, v, _, _ = get_jwt_from_access(at)
-            return ok({'jwt': tok, 'decoded': decode_jwt(tok)})
+            return ok({'jwt': tok, 'decoded': decode_jwt(tok), '_display': tok})
         except Exception as e: return err(str(e))
 
     # ── GUEST → JWT ──
@@ -659,7 +535,7 @@ def api():
             open_id = j.get('open_id'); at2 = j.get('access_token')
             if not open_id or not at2: return err(f'Guest auth thất bại: {r.text}')
             tok, k, v = major_login(open_id, at2, 4)
-            return ok({'jwt': tok, 'decoded': decode_jwt(tok)})
+            return ok({'jwt': tok, 'decoded': decode_jwt(tok), '_display': tok})
         except Exception as e: return err(str(e))
 
     # ── LOGIN HISTORY ──
@@ -718,70 +594,107 @@ def api():
         if not uid: return err('Unauthorized (missing uid)')
         if not at: return err('Access token required')
 
-        if uid in active_spams and active_spams[uid]['status'] == 'running':
-            s = active_spams[uid]
+        with _spam_lock:
+            existing = active_spams.get(uid)
+        if existing and existing['status'] == 'running':
             return ok({
-                'status': 'running', 
-                'ip': s['ip'], 
-                'port': s['port'],
-                'sent': s['sent'],
-                'ok': s['ok'],
-                'fail': s['fail'],
-                'at': s['at']
-            }, 'Spam is already running')
+                'status':  'running',
+                'sid':     existing['sid'],
+                'ip':      existing['ip'],
+                'port':    existing['port'],
+                'sent':    existing['sent'],
+                'ok':      existing['ok'],
+                'fail':    existing['fail'],
+            }, 'Guard đang chạy — đã kết nối lại')
 
         try:
             open_id, platform = inspect_token(at)
             jwt, key, iv_tok, _, _ = get_jwt_from_access(at)
             online_ip, online_port, w_ip, w_port = get_login_data(jwt, open_id, at, platform)
             packet = build_login_packet(jwt, key, iv_tok)
-            
+
+            # Whisper packet lần đầu
+            if w_ip and w_port:
+                try: send_packet_tcp(w_ip, w_port, packet)
+                except: pass
+
             max_duration = 15 * 86400 * 1000
             if duration <= 0 or duration > max_duration: duration = max_duration
-            
             end_time = time.time() + (duration / 1000.0)
-            stop_event = threading.Event()
-            thread = threading.Thread(target=spam_loop, args=(uid, online_ip, online_port, packet, iv, end_time))
-            thread.daemon = True
-            
-            active_spams[uid] = {
-                'at': at,
-                'stop_event': stop_event,
-                'status': 'running',
-                'sent': 0,
-                'ok': 0,
-                'fail': 0,
-                'ip': online_ip,
-                'port': online_port,
-                'end_time': end_time
-            }
+
+            # Tạo sid để frontend dùng reconnect (không phụ thuộc session cookie)
+            sid       = uuid.uuid4().hex
+            stop_ev   = threading.Event()
+            thread    = threading.Thread(
+                target=spam_loop,
+                args=(uid, stop_ev, online_ip, online_port, packet, iv, end_time),
+                daemon=True
+            )
+            with _spam_lock:
+                active_spams[uid]     = {
+                    'sid':       sid,
+                    'at':        at,
+                    'stop_ev':   stop_ev,
+                    'status':    'running',
+                    'sent':      0,
+                    'ok':        0,
+                    'fail':      0,
+                    'ip':        online_ip,
+                    'port':      online_port,
+                    'end_time':  end_time,
+                }
+                active_spams_sid[sid] = uid
             thread.start()
-            return ok({'status': 'started', 'ip': online_ip, 'port': online_port})
+            return ok({
+                'status':  'started',
+                'sid':     sid,          # frontend lưu localStorage
+                'ip':      online_ip,
+                'port':    online_port,
+                'pkt_size': len(packet),
+            })
         except Exception as e: return err(str(e))
 
     elif act == 'spam_status':
-        if not uid or uid not in active_spams:
+        # Hỗ trợ tra cứu bằng sid (localStorage) HOẶC uid (session)
+        sid_q = d.get('sid', '')
+        with _spam_lock:
+            if sid_q and sid_q in active_spams_sid:
+                uid_key = active_spams_sid[sid_q]
+            elif uid and uid in active_spams:
+                uid_key = uid
+            else:
+                return ok({'status': 'idle'})
+            s = active_spams.get(uid_key)
+        if not s:
             return ok({'status': 'idle'})
-        s = active_spams[uid]
         return ok({
-            'status': s['status'],
-            'sent': s['sent'],
-            'ok': s['ok'],
-            'fail': s['fail'],
-            'ip': s['ip'],
-            'port': s['port'],
-            'at': s['at'],
-            'remaining_ms': max(0, int((s['end_time'] - time.time()) * 1000))
+            'status':       s['status'],
+            'sid':          s['sid'],
+            'sent':         s['sent'],
+            'ok':           s['ok'],
+            'fail':         s['fail'],
+            'ip':           s['ip'],
+            'port':         s['port'],
+            'remaining_ms': max(0, int((s['end_time'] - time.time()) * 1000)),
         })
 
     elif act == 'spam_stop':
-        if uid in active_spams:
-            active_spams[uid]['stop_event'].set()
-            active_spams[uid]['status'] = 'stopped'
-            # Cleanup after a short delay or immediately
-            del active_spams[uid]
-            return ok(msg='Đã dừng và xóa tiến trình thành công')
-        return err('Không có tiến trình nào đang chạy cho tài khoản này')
+        sid_q = d.get('sid', '')
+        with _spam_lock:
+            if sid_q and sid_q in active_spams_sid:
+                uid_key = active_spams_sid.pop(sid_q)
+            elif uid and uid in active_spams:
+                uid_key = uid
+                # xóa sid mapping nếu có
+                old_sid = active_spams[uid].get('sid')
+                if old_sid: active_spams_sid.pop(old_sid, None)
+            else:
+                return err('Không có tiến trình nào đang chạy')
+            sess = active_spams.pop(uid_key, None)
+        if sess:
+            sess['stop_ev'].set()
+            return ok(msg='Guard đã dừng')
+        return err('Không tìm thấy tiến trình')
 
     return err(f'Unknown action: {act}')
 
