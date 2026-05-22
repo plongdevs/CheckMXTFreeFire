@@ -351,26 +351,89 @@ class SimpleProtobuf:
         p = str(platform)
         random_ip = f"1{random.randint(0,9)}{random.randint(0,9)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
         random_device = f"Google|{str(uuid.uuid4())}"
+
         payload = bytearray()
         payload.extend(SimpleProtobuf.encode_string(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         payload.extend(SimpleProtobuf.encode_string(4,  "free fire"))
         payload.extend(SimpleProtobuf.encode_int32 (5,  4))
         payload.extend(SimpleProtobuf.encode_string(7,  "1.123.1"))
         payload.extend(SimpleProtobuf.encode_string(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
+        payload.extend(SimpleProtobuf.encode_string(9,  "Handheld"))
+        payload.extend(SimpleProtobuf.encode_string(10, "vn"))
+        payload.extend(SimpleProtobuf.encode_string(11, "WIFI"))
+        payload.extend(SimpleProtobuf.encode_int32 (12, 2400))
+        payload.extend(SimpleProtobuf.encode_int32 (13, 1080))
+        payload.extend(SimpleProtobuf.encode_string(14, "560"))
+        payload.extend(SimpleProtobuf.encode_string(15, "ARM64 FP ASIMD AES | 8192 | 8"))
+        payload.extend(SimpleProtobuf.encode_int32 (16, 3328))
+        payload.extend(SimpleProtobuf.encode_string(17, "Adreno (TM) 640"))
+        payload.extend(SimpleProtobuf.encode_string(18, "OpenGL ES 3.2 V@0490.0 (GIT@f51fd3a, Ia8bab3e8c8, 1602597876) (Date:10/13/20)"))
         payload.extend(SimpleProtobuf.encode_string(19, random_device))
         payload.extend(SimpleProtobuf.encode_string(20, random_ip))
+        payload.extend(SimpleProtobuf.encode_string(21, "en"))
         payload.extend(SimpleProtobuf.encode_string(22, open_id))
         payload.extend(SimpleProtobuf.encode_string(23, p))
+        payload.extend(SimpleProtobuf.encode_string(24, "Handheld"))
+        payload.extend(SimpleProtobuf.encode_string(25, "samsung SM-G991B"))
         payload.extend(SimpleProtobuf.encode_string(29, access_token))
-        payload.extend(SimpleProtobuf.encode_string(99, p))
+        payload.extend(SimpleProtobuf.encode_int32 (30, 1))
+        payload.extend(SimpleProtobuf.encode_string(41, "vn"))
+        payload.extend(SimpleProtobuf.encode_string(42, "WIFI"))
+        payload.extend(SimpleProtobuf.encode_string(57, "4a10243f7968f0b4bea6b7c7c678e6fa"))
+        payload.extend(SimpleProtobuf.encode_int32 (60, 2019120270))
+        payload.extend(SimpleProtobuf.encode_int32 (61, 1424))
+        payload.extend(SimpleProtobuf.encode_int32 (62, 3349))
+        payload.extend(SimpleProtobuf.encode_int32 (63, 24))
+        payload.extend(SimpleProtobuf.encode_int32 (64, 1552))
+        payload.extend(SimpleProtobuf.encode_int32 (65, 2019120270))
+        payload.extend(SimpleProtobuf.encode_int32 (66, 1552))
+        payload.extend(SimpleProtobuf.encode_int32 (67, 2019120270))
+        payload.extend(SimpleProtobuf.encode_int32 (73, 1))
+        payload.extend(SimpleProtobuf.encode_string(74, "/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/lib/arm64"))
+        payload.extend(SimpleProtobuf.encode_int32 (76, 2))
+        payload.extend(SimpleProtobuf.encode_string(77, "4a10243f7968f0b4bea6b7c7c678e6fa|/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/base.apk"))
+        payload.extend(SimpleProtobuf.encode_int32 (78, 2))
+        payload.extend(SimpleProtobuf.encode_int32 (79, 2))
+        payload.extend(SimpleProtobuf.encode_string(81, "64"))
+        payload.extend(SimpleProtobuf.encode_string(83, "2019120270"))
+        payload.extend(SimpleProtobuf.encode_int32 (85, 1))
+        payload.extend(SimpleProtobuf.encode_string(86, "OpenGLES3"))
+        payload.extend(SimpleProtobuf.encode_int32 (87, 16383))
+        payload.extend(SimpleProtobuf.encode_int32 (88, 4))
+        payload.extend(SimpleProtobuf.encode_string(90, "HoChiMinh"))
+        payload.extend(SimpleProtobuf.encode_string(91, "VN"))
+        payload.extend(SimpleProtobuf.encode_int32 (92, 70000))
+        payload.extend(SimpleProtobuf.encode_string(93, "android"))
+        payload.extend(SimpleProtobuf.encode_string(94, "MIIFhjCCA26gAwIBAgIUVCQdTKC364qgxvKKn15UMOLnM0wwDQYJKoZIhvcNAQELBQAwdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMB4XDTE3MDkyODEwMDgyNloXDTQ3MDkyODEwMDgyNlowdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAvylTyLEk6kqvaTtO+5+GW/sQ8P2yhsXpDiuRSQis56yl8UMR8mx8roLnnTU/mv8sKBf8Y811Z5BBBTaty/305IMnx5Exl/fE30atgemNjt66wGFio1wT1qhTPgK1qZYRTBpGIAcADd1g6xfw5ujF00XfzeOQBRWmYPioCpWI9tK+VayHk6jU09I9Y1TNUz5D76X4y7WQjIotpFRP8y9dzZJPG7Nh+RYbQdW2RxD10NITD6FQdRanWFRJP5YCQEMN/SGGdPnfCetDxXLwSVGdTfsWwTWrYBueMTUlFBSZDgSt8MXW1R9bF5UUEiz74OiZNONhx1LRrydyTDC3O/K0LaJ8d6s+Dyfonq4bRF4UQ0C/tQtJtz5XTkmY9wsscLekZ+TDwHKEP0m0j7pktBq54Bdr+TNPlyQ/NaWr4SeKiLbFEDfIPy5XoOcJX3anIjw4sm2xPr4YST8zDcnNFiq4RkMdOyyumxapasD0JSTslQu1MjLBH7S1QdNLIU+EByyjd5X9wtLww40jHxcPLUihb0glIJTg6YTWKDIg9dcJ/gc7uSSaqjG8cX86wBTaleV32x+gYtFxy4SNIEiwevP0zFirhTcQ7eJvfDvtyMqnpDUHzvTmvddyekQuWOr2Lmh0ZnBWb8H93heQcrr7gOUgi/DZS6MwMRK8fy6nQT39RzsCAwEAAaMQMA4wDAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAgEAP+WSvrwEWPjLMWyIB8KfPjkWMgPf+6/SWhw1Yj0Fnoo430rcmDw9YHInJXvDxW8gSOfxxzKzENLFQEQl08K7htiEI7lDPHqdrjV615cV+tzrTM5mX4i0jbZ3zKDBrY8pHbzvrPuaZm5Nk4N06L+jsLDkzPq/gUKdGLSjiYK32asOduq4ILNlh2QFJkQm/cFZw71c+UWNDiLQ2PX1644e9/Akzh5X4X2lMA4yAGWDRhFFzbdDCGlsUkD/3qxvN1O3k82YIzYQKrpN9c9J3lvnDDKzpwNptZRLB+mWej637FWrByRygbxzqAjtfhPoGW7Kd6vvRtvVGlyCJzYMMhtZPnmHRqCaGzo9MKh+9IICDCDWt4u2HR4QcYCAsZeCJE3gkP4vnqLp3y2BqOisZHgIB94MlUeTzJOLLHY+jIdr9sKDGvtgy5FHwdd8aCHxRvjNF2W/oDnWX7mVPcwueGbToEszvoP0hbEqgJIOHGGgLIjQ7+0gqkT/az3owaP/KNRtkDpoRXCA8aSCjC+UyY01qnj/rS4l9IAxIthSqf6BYEUWnL53KpQWuYVHq5CNEjjnM/0LKIvTh1wIDQCCtfn9Hwp6cud2LYafRKgOZekqb/UlZGf/LJ1vkBKvIr48xLRCDHeRW5kuPFBZISMfSR/KRjIQTCn07fbXunufqeJ868c="))
+        payload.extend(SimpleProtobuf.encode_int32 (97, 1))
+        payload.extend(SimpleProtobuf.encode_int32 (98, 1))
+        payload.extend(SimpleProtobuf.encode_string(99,  p))
+        payload.extend(SimpleProtobuf.encode_string(100, p))
+        payload.extend(SimpleProtobuf.encode_string(102, ""))
         return bytes(payload)
+
+def build_ban_packet(jwt, account_id, timestamp, key, iv):
+    try:
+        # Ported from Ban7Api
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        enc = cipher.encrypt(pad(jwt.encode(), 16))
+        
+        ide_hex = hex(int(account_id))[2:].zfill(16)
+        timestamp_hex = hex(int(timestamp))[2:].zfill(16)
+        head_len_hex = hex(len(enc))[2:].zfill(8)
+        
+        # Ban7 packet header: 0115 (2) + account_id (8) + timestamp (8) + length (4)
+        head_hex = f"0115{ide_hex}{timestamp_hex}{head_len_hex}"
+        return bytes.fromhex(head_hex) + enc
+    except:
+        return None
 
 def ban7_logic(access_token, platform_manual=None):
     try:
         # Step 1: Inspect token
         open_id, platform = inspect_token(access_token)
         
-        # Determine platforms to try (detect/search like spam log)
+        # Determine platforms to try
         platforms = [int(platform_manual)] if platform_manual else list(dict.fromkeys([platform, 2, 3, 4, 6, 8]))
         
         last_error = "Tất cả platform đều thất bại"
@@ -379,7 +442,7 @@ def ban7_logic(access_token, platform_manual=None):
             try:
                 # Step 2: MajorLogin using fake device payload
                 payload = SimpleProtobuf.create_ban_payload(open_id, access_token, pt)
-                enc = aes_enc(payload)
+                enc     = aes_enc(payload)
 
                 r = requests.post(
                     "https://loginbp.ggpolarbear.com/MajorLogin",
@@ -399,39 +462,62 @@ def ban7_logic(access_token, platform_manual=None):
                     continue
 
                 # Step 3: Parse response
-                tok, k, v = None, None, None
+                tok, k, v, timetamp = None, None, None, 0
+                
+                # Decrypt response
+                dec = aes_dec(r.content)
+                raw_proto = dec if dec else r.content
+                p = proto_parse(raw_proto)
+                
                 try:
                     from MajorLogin_res_pb2 import MajorLoginRes
                     res = MajorLoginRes()
-                    dec = aes_dec(r.content) # Use default key/iv
-                    res.ParseFromString(dec if dec else r.content)
+                    res.ParseFromString(raw_proto)
                     if res.account_jwt:
                         tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
                 except: pass
 
                 if not tok:
-                    p = proto_parse(aes_dec(r.content) or r.content)
                     tok = pget(p, 8)
                     k = pget(p, 22) or AES_KEY
                     v = pget(p, 23) or AES_IV
+                    if isinstance(k, str): k = k.encode()
+                    if isinstance(v, str): v = v.encode()
 
                 if not tok: 
                     last_error = f"Platform {pt}: Parse failed"
                     continue
 
+                # Get nanosecond timestamp (field 21)
+                field_21_value = p.get(21)
+                if field_21_value:
+                    if isinstance(field_21_value, list): field_21_value = field_21_value[0]
+                    timetamp = int(field_21_value)
+                else:
+                    # Fallback to exp from JWT
+                    pl_jwt = decode_jwt(tok)
+                    exp = int(pl_jwt.get("exp", 0))
+                    timetamp = exp * 1_000_000_000
+
                 # Step 4: GetLoginData
                 online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, pt)
 
                 # Step 5: Build and send packet
-                packet = build_login_packet(tok, k, v)
+                pl_jwt = decode_jwt(tok)
+                account_id = int(pl_jwt.get("account_id", 0))
+                
+                packet = build_ban_packet(tok, account_id, timetamp, k, v)
+                if not packet:
+                    last_error = f"Platform {pt}: Build packet failed"
+                    continue
+                    
                 recv_len = send_packet_tcp(online_ip, online_port, packet)
                 
                 if recv_len > 0:
-                    pl = decode_jwt(tok)
                     return {
                         "success": True,
-                        "account_id": pl.get("account_id"),
-                        "nickname": pl.get("nickname"),
+                        "account_id": account_id,
+                        "nickname": pl_jwt.get("nickname"),
                         "platform": pt,
                         "msg": "Lệnh Ban 7 Ngày đã được thực thi thành công!"
                     }
@@ -447,6 +533,7 @@ def ban7_logic(access_token, platform_manual=None):
 
     except Exception as e:
         return {"success": False, "message": str(e)}
+
 
 # ═══════════════════════════════════════
 # ROUTES
