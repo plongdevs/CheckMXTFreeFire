@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: garena-tools-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main_flask.py
+    envVars:
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: PORT
+        value: 8000
